@@ -132,6 +132,7 @@ describe('init (integration)', () => {
     expect(existsSync(join(dir, '.claude', 'skills', 'kando', 'SKILL.md'))).toBe(true);
     expect(existsSync(join(dir, '.claude', 'commands', 'kando-loop.md'))).toBe(true);
     expect(existsSync(join(dir, '.claude', 'hooks', 'kando-workflow.mjs'))).toBe(true);
+    expect(existsSync(join(dir, '.claude', 'hooks', 'kando-verify-wait.mjs'))).toBe(true);
 
     const settings = JSON.parse(readFileSync(join(dir, '.claude', 'settings.local.json'), 'utf8'));
     expect(settings.enabledMcpjsonServers).toContain('kando');
