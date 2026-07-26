@@ -13,24 +13,43 @@ Work one or more Kando **targets** (board keys and/or `KEY-N` stories/subtasks) 
 
 You may be given **one OR MORE targets** (space-separated, e.g. `TSK-1 TSK-2 TSK-3` — board keys and/or `KEY-N` stories/subtasks, mixed). Process them **in order**. Keep your own context lean — you never implement or review; a worker implements, an independent reviewer judges. **Safety counters are cumulative across the whole run** — all targets share one budget.
 
+**Before the first ticket, compose this repo's verification probe — once per run.** Read the repo and write a single shell command that answers "did commit `<sha>` end up green?" by its **exit code**: `0` green, `1` red, `2` still pending. Use `<sha>` as the placeholder; each worker's real sha is substituted at arming time. Work it out from what is actually in the repo — CI config, `Makefile`, `package.json` — rather than assuming a provider.
+
+Illustrations, **not a menu** — a Buildkite or Jenkins repo gets a probe you write by reading it:
+- GitHub Actions: `s=$(gh run list --commit <sha> --json status,conclusion --jq 'if length==0 then 2 elif (.[0].status!="completed") then 2 elif (.[0].conclusion=="success") then 0 else 1 end'); exit "${s:-3}"`
+- GitLab CI: `glab ci status --sha <sha>` wrapped the same way, so it maps to 0/1/2.
+- No CI at all: the repo's own test command, e.g. `npm test` — it exits 0 or 1 and never reports pending, which the waiter handles without a special case.
+
+**The verdict must be the probe's exit code, not something it prints.** `gh ... --jq '...'` *prints* the number and exits 0 because `gh` itself succeeded — a probe ending `; exit $?` therefore reports **green for a still-pending run**. Capture the output and exit with it, as above. The `${s:-3}` fallback matters too: if the CLI fails outright the substitution is empty, and `3` halts the loop loudly instead of silently passing the ticket.
+
+**A probe must never return `2` when no run will ever exist.** A push filtered out by path rules or branch conditions triggers no pipeline, and a naive "no run found yet → pending" probe then polls forever. Give the probe its own grace period: once the sha is on the target branch and no run has appeared within it, return `0`.
+
+If you cannot compose a probe for this repo, skip the wait entirely and fall back to the green-local-build gate described in the worker prompt.
+
 **For each `target` in the list, in order, repeat until it is exhausted:**
 
 1. Call `next_task(target)`. If it returns `{ "none": true }` → this target is **exhausted**: go to the **next target** (or, if it was the last, **stop — success**).
 2. Enforce safety BEFORE dispatching (cumulative across all targets):
    - If `done + human-needed ≥ 25` → **stop (max-tasks)**.
    - If the last **3** results in a row were `human-needed` → **stop (circuit breaker)**.
-3. Dispatch ONE worker subagent (Agent tool, general-purpose) with the **worker prompt** below for the ticket `KEY-N`. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
+3. Dispatch ONE worker subagent (Agent tool, general-purpose, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
 4. **Independent review inner loop** (max **3** rounds) — while the worker reports `ready-for-review`:
-   a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, general-purpose) with the **reviewer prompt** below, giving it the ticket intent and the diff. It returns a BLOCKING list and an ADVISORY list.
+   a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, general-purpose, **`run_in_background: false`**) with the **reviewer prompt** below, giving it the ticket intent and the diff. It returns a BLOCKING list and an ADVISORY list.
    b. **No blocking findings** → SendMessage the worker: `review passed — ship it`. Go to step 5.
    c. **Blocking findings** → SendMessage the worker the findings. It fixes, recommits, and reports `ready-for-review` again. `round++`.
    d. If `round > 3` and still blocking → SendMessage the worker: `block it: <findings>`. It tags `human-needed` + writes a Blocked note; treat the result as `blocked`.
    - Advisory findings never block and never trigger a round; the worker may apply low-risk ones or note them in the Done section.
-5. Read the worker's final report and **verify** it via `get_ticket` **and git**:
-   - `done` → the ticket MUST be in the last column, carry the `claude` tag, and have a deep link in its `## 🤖 Claude — Done` section — **AND the change MUST be on `origin/main` with the Prod deploy green.** Verify the change is on main (`git fetch origin && git branch -r --contains <sha>` shows `origin/main`, or `gh run list --branch main` shows the green deploy for it). A `done` whose commit is only on a branch / in an open PR / merely green on branch-CI is **NOT done** — treat as a failure and **stop**.
+5. **When the worker reports `pushed`** (with its commit sha), arm the waiter and **end your turn**:
+   - `Monitor` with `persistent: true`, command `node .claude/hooks/kando-verify-wait.mjs --probe '<the run's probe, with <sha> replaced by the worker's sha>'`.
+   - Each heartbeat re-invokes you. While the status is `pending`, do nothing but stay visible — there is no deadline, by design.
+   - Waiter exits **0** → SendMessage the worker `verified green, finish up`. It moves the ticket to the last column, records the deep link, and reports `done`.
+   - Waiter exits **1** → **stop the whole loop** — a red pipeline is an infra failure. Surface the probe output.
+   - Waiter exits **3** → **stop the whole loop** — the probe is malformed and cannot fix itself by being retried. Report the exit code and the probe. **Never treat this as green.**
+   - No probe was composable for this repo → skip the wait; the worker's green local build is the gate.
+6. Read the worker's final report and **verify** it via `get_ticket`:
+   - `done` → the ticket MUST be in the last column, carry the `claude` tag, and have a deep link in its `## 🤖 Claude — Done` section. You already observed the verification go green in step 5, so re-check the ticket state via `get_ticket` — do not re-derive the pipeline status.
    - `blocked` → the ticket MUST carry `claude` + `human-needed`. Count it toward the circuit breaker.
-   - `deploy-failed` → **stop the whole loop immediately** — a broken deployment is an infra failure. Surface the failed-run link.
-6. Loop back to step 1 for the **same target**.
+7. Loop back to step 1 for the **same target**.
 
 Final summary: cumulative counts of done / human-needed / skipped, the stop reason, and — if a limit tripped mid-run — which target it stopped on.
 
@@ -45,9 +64,10 @@ Dispatch a general-purpose subagent with this instruction (substitute the real `
 > 4. **Implement to green (GREEN).** Minimal code to make those tests pass; then run the full suite (and build, if any) and confirm it is green.
 > 5. **Commit LOCALLY — do NOT push.** Append a `## 🤖 Claude — Done` section. `git commit`. Then **report `ready-for-review`** and STOP — do not push. The coordinator will have an independent reviewer look at your diff.
 > 6. **When the coordinator sends review findings:** fix every BLOCKING one, keep the suite green, `git commit`, and report `ready-for-review` again. (Apply low-risk ADVISORY suggestions too, or note them in the Done section.)
-> 7. **When the coordinator says `review passed — ship it`:** **DONE = the change is committed and pushed to `main` and the Prod deploy is green — nothing less.** Land the change on **`main`**: if you worked on a branch, merge it into `main` with `git merge --no-ff` (or commit directly on `main`), then **push `main`**. Running `/kando-loop` authorizes this — it is a standing pre-authorization to deploy; do NOT stop to ask, and do NOT leave the work on a branch or an open PR. Then find the Prod deploy run triggered by the push to main (`gh run list --branch main --limit 3`) and **watch it to completion** (`gh run watch <run-id>`): **green** → move the ticket to the last column, record a **deep link** (the `main` commit URL + the successful **Prod deploy run** URL) in the Done section, report **`done`**; **red** → report **`deploy-failed`** with the failed-run URL. (Only if this repo has NO push-to-`main` deploy pipeline is a green local build the gate, and the deep link is the `main` commit URL.)
-> 8. **When the coordinator says `block it`:** `ensure_tag <board> human-needed`, apply it (keep `claude`), append a `## 🤖 Claude — Blocked` section with the outstanding findings and what you tried, leave the ticket un-shipped, report **`blocked`**.
-> Report exactly one word each turn — `ready-for-review`, `done`, `blocked`, or `deploy-failed` — with a one-line reason. Never push before the coordinator says the review passed.
+> 7. **When the coordinator says `review passed — ship it`:** land the change on **`main`** — if you worked on a branch, merge it with `git merge --no-ff` (or commit directly on `main`), then **push `main`**. Running `/kando-loop` authorizes this — it is a standing pre-authorization to deploy; do NOT stop to ask, and do NOT leave the work on a branch or an open PR. Then report **`pushed`** with the commit sha and STOP. **Do not watch any pipeline yourself** — the coordinator owns that wait. (If the repo has no verification pipeline, the coordinator will tell you to finish immediately on your green local build.)
+> 8. **When the coordinator says `verified green, finish up`:** move the ticket to the last column, record a **deep link** (the `main` commit URL, plus the pipeline run URL if there is one) in the Done section, and report **`done`**.
+> 9. **When the coordinator says `block it`:** `ensure_tag <board> human-needed`, apply it (keep `claude`), append a `## 🤖 Claude — Blocked` section with the outstanding findings and what you tried, leave the ticket un-shipped, report **`blocked`**.
+> Report exactly one word each turn — `ready-for-review`, `pushed`, `done`, or `blocked` — with a one-line reason. Never push before the coordinator says the review passed.
 
 ## Reviewer prompt (independent — never the implementer)
 
@@ -73,10 +93,18 @@ Dispatch a FRESH general-purpose subagent (it did NOT write this code) with:
 
 (A ticket the reviewer cannot pass in 3 rounds also lands as `human-needed` — that is the coordinator's `block it` path, separate from this bar.)
 
+## No silent waits
+
+**No wait in this loop may depend on a single notification that might not arrive.** That is the failure mode this design exists to remove.
+
+- Short waits — worker dispatch, reviewer dispatch, review round-trips — are **synchronous** (`run_in_background: false`). The coordinator is strictly sequential and needs each result before continuing, so backgrounding them buys nothing and makes a lost notification fatal.
+- The one genuinely long wait — verification after a push — is a **heartbeat stream** via `Monitor`, never a blocking call. Never run a pipeline watch (`gh run watch` or any equivalent) in the foreground: it blocks with no heartbeat, and a foreground command is capped at 10 minutes anyway.
+- A wait that produces no output is indistinguishable from a wait that died. If you are waiting, something must be emitting.
+
 ## Never
 
-- **Never report `done` before the change is committed and pushed to `main` AND the Prod deploy is green.** A pushed branch, an open PR, or a green branch-CI run is NOT done — the deploy triggers on `main`.
+- **Never report `done` before the change is pushed to `main` AND the verification probe has gone green.** A pushed branch, an open PR, or a green branch-CI run is NOT done.
 - Never stop the loop to ask for deploy authorization — `/kando-loop` is the standing authorization to land tickets on `main` and deploy.
 - Never push before the independent review passes. The reviewer is NEVER the implementer — always a fresh, separate agent.
 - Never skip TDD when the change is testable; never accept a false "no testable surface" exemption.
-- Never push a red build. Never mark `done` on a red deploy. Never work a ticket assigned to a human. Never continue the loop after a `deploy-failed`. Never lower the `human-needed` bar to skip hard work.
+- Never push a red build. Never mark `done` on a red or malformed verification. Never work a ticket assigned to a human. Never continue the loop after a red pipeline. Never lower the `human-needed` bar to skip hard work.

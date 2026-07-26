@@ -152,9 +152,16 @@ export function init(targetDir: string): void {
   copyTree(join(pkgRoot, '..', 'commands'), join(target, '.claude', 'commands'));
 
   // 3) Node workflow hook (shipped asset), invoked via `node`
-  const hookDest = join(target, '.claude', 'hooks', 'kando-workflow.mjs');
-  mkdirSync(dirname(hookDest), { recursive: true });
+  const hooksDir = join(target, '.claude', 'hooks');
+  mkdirSync(hooksDir, { recursive: true });
+  const hookDest = join(hooksDir, 'kando-workflow.mjs');
   copyFileSync(join(pkgRoot, '..', 'assets', 'kando-workflow.mjs'), hookDest);
+  // The loop's verification waiter. Not a hook — the coordinator runs it under
+  // Monitor — but it lives here so `init` ships it with the hook it sits beside.
+  copyFileSync(
+    join(pkgRoot, '..', 'assets', 'kando-verify-wait.mjs'),
+    join(hooksDir, 'kando-verify-wait.mjs'),
+  );
   // $CLAUDE_PROJECT_DIR is set by Claude Code for hooks. NOTE: the POSIX form is
   // verified; Windows hook-shell expansion is the A15 real-Windows decision point.
   const hookCmd = `node "$CLAUDE_PROJECT_DIR/.claude/hooks/kando-workflow.mjs"`;
