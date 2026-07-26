@@ -13,18 +13,26 @@ Work one or more Kando **targets** (board keys and/or `KEY-N` stories/subtasks) 
 
 You may be given **one OR MORE targets** (space-separated, e.g. `TSK-1 TSK-2 TSK-3` — board keys and/or `KEY-N` stories/subtasks, mixed). Process them **in order**. Keep your own context lean — you never implement or review; a worker implements, an independent reviewer judges. **Safety counters are cumulative across the whole run** — all targets share one budget.
 
-**Before the first ticket, compose this repo's verification probe — once per run.** Read the repo and write a single shell command that answers "did commit `<sha>` end up green?" by its **exit code**: `0` green, `1` red, `2` still pending. Use `<sha>` as the placeholder; each worker's real sha is substituted at arming time. Work it out from what is actually in the repo — CI config, `Makefile`, `package.json` — rather than assuming a provider.
+**Before the first ticket, compose this repo's verification commands — once per run.** Read the repo — CI config, `Makefile`, `package.json` — and work out how *it* decides a commit is good, rather than assuming a provider. There are two commands, and you need **at least one**:
 
-Illustrations, **not a menu** — a Buildkite or Jenkins repo gets a probe you write by reading it:
-- GitHub Actions: `s=$(gh run list --commit <sha> --json status,conclusion --jq 'if length==0 then 2 elif (.[0].status!="completed") then 2 elif (.[0].conclusion=="success") then 0 else 1 end'); exit "${s:-3}"`
-- GitLab CI: `glab ci status --sha <sha>` wrapped the same way, so it maps to 0/1/2.
-- No CI at all: the repo's own test command, e.g. `npm test` — it exits 0 or 1 and never reports pending, which the waiter handles without a special case.
+- **`--watch` (primary): a command that BLOCKS until the outcome is known**, then exits `0` green / `1` red. This is the fast path — it returns within seconds of the work finishing.
+- **`--probe` (safety net): a command that QUERIES current status and returns immediately**, exiting `0` green / `1` red / `2` still pending. It is polled on a backoff, and exists so a watch that hangs or dies can never strand the loop.
 
-**The verdict must be the probe's exit code, not something it prints.** `gh ... --jq '...'` *prints* the number and exits 0 because `gh` itself succeeded — a probe ending `; exit $?` therefore reports **green for a still-pending run**. Capture the output and exit with it, as above. The `${s:-3}` fallback matters too: if the CLI fails outright the substitution is empty, and `3` halts the loop loudly instead of silently passing the ticket.
+Illustrations, **not a menu** — a Buildkite or Jenkins repo gets commands you write by reading it:
+
+| Repo | `--watch` | `--probe` |
+|---|---|---|
+| GitHub Actions | `gh run watch <run-id> --exit-status` | `s=$(gh run list --commit <sha> --json status,conclusion --jq 'if length==0 then 2 elif (.[0].status!="completed") then 2 elif (.[0].conclusion=="success") then 0 else 1 end'); exit "${s:-3}"` |
+| GitLab CI | `glab ci status --sha <sha> --wait` | `glab ci status --sha <sha>` wrapped to map to 0/1/2 |
+| **No CI at all** | **the repo's own test command, e.g. `npm test`** | *(none — omit it)* |
+
+**A local test suite is a watch, never a probe.** It blocks, it takes as long as it takes, and there is no status to query. Passing it as `--probe` is a bug: probes carry a short per-invocation timeout, so a suite slower than that gets killed, reported `pending`, and re-run forever — a suite that PASSES never produces a verdict. Pass it as `--watch` and omit `--probe` entirely.
+
+**The verdict must be the command's exit code, not something it prints.** `gh ... --jq '...'` *prints* the number and exits 0 because `gh` itself succeeded — a probe ending `; exit $?` therefore reports **green for a still-pending run**. Capture the output and exit with it, as above. The `${s:-3}` fallback matters too: if the CLI fails outright the substitution is empty, and `3` halts the loop loudly instead of silently passing the ticket.
 
 **A probe must never return `2` when no run will ever exist.** A push filtered out by path rules or branch conditions triggers no pipeline, and a naive "no run found yet → pending" probe then polls forever. Give the probe its own grace period: once the sha is on the target branch and no run has appeared within it, return `0`.
 
-If you cannot compose a probe for this repo, skip the wait entirely and fall back to the green-local-build gate described in the worker prompt.
+If you can compose neither, skip the wait entirely and fall back to the green-local-build gate described in the worker prompt.
 
 **For each `target` in the list, in order, repeat until it is exhausted:**
 
@@ -40,12 +48,12 @@ If you cannot compose a probe for this repo, skip the wait entirely and fall bac
    d. If `round > 3` and still blocking → SendMessage the worker: `block it: <findings>`. It tags `human-needed` + writes a Blocked note; treat the result as `blocked`.
    - Advisory findings never block and never trigger a round; the worker may apply low-risk ones or note them in the Done section.
 5. **When the worker reports `pushed`** (with its commit sha), arm the waiter and **end your turn**:
-   - `Monitor` with `persistent: true`, command `node .claude/hooks/kando-verify-wait.mjs --probe '<the run's probe, with <sha> replaced by the worker's sha>'`.
+   - `Monitor` with `persistent: true`, command `node .claude/hooks/kando-verify-wait.mjs` with whichever of `--watch '<cmd>'` / `--probe '<cmd>'` you composed (at least one, both when both exist), substituting the worker's sha and — for a `gh run watch`-style watch — the run id you looked up from that sha.
    - Each heartbeat re-invokes you. While the status is `pending`, do nothing but stay visible — there is no deadline, by design.
    - Waiter exits **0** → SendMessage the worker `verified green, finish up`. It moves the ticket to the last column, records the deep link, and reports `done`.
-   - Waiter exits **1** → **stop the whole loop** — a red pipeline is an infra failure. Surface the probe output.
-   - Waiter exits **3** → **stop the whole loop** — the probe is malformed and cannot fix itself by being retried. Report the exit code and the probe. **Never treat this as green.**
-   - No probe was composable for this repo → skip the wait; the worker's green local build is the gate.
+   - Waiter exits **1** → **stop the whole loop** — a red pipeline is an infra failure. Surface the output.
+   - Waiter exits **3** → **stop the whole loop**. Either the probe is malformed, or a watch went unavailable with no probe to fall back on. Neither fixes itself by being retried. Report the exit code and the commands. **Never treat this as green.**
+   - Neither command was composable for this repo → skip the wait; the worker's green local build is the gate.
 6. Read the worker's final report and **verify** it via `get_ticket`:
    - `done` → the ticket MUST be in the last column, carry the `claude` tag, and have a deep link in its `## 🤖 Claude — Done` section. You already observed the verification go green in step 5, so re-check the ticket state via `get_ticket` — do not re-derive the pipeline status.
    - `blocked` → the ticket MUST carry `claude` + `human-needed`. Count it toward the circuit breaker.
@@ -98,7 +106,7 @@ Dispatch a FRESH general-purpose subagent (it did NOT write this code) with:
 **No wait in this loop may depend on a single notification that might not arrive.** That is the failure mode this design exists to remove.
 
 - Short waits — worker dispatch, reviewer dispatch, review round-trips — are **synchronous** (`run_in_background: false`). The coordinator is strictly sequential and needs each result before continuing, so backgrounding them buys nothing and makes a lost notification fatal.
-- The one genuinely long wait — verification after a push — is a **heartbeat stream** via `Monitor`, never a blocking call. Never run a pipeline watch (`gh run watch` or any equivalent) in the foreground: it blocks with no heartbeat, and a foreground command is capped at 10 minutes anyway.
+- The one genuinely long wait — verification after a push — is a **heartbeat stream** via `Monitor`, never a blocking call *of yours*. **Never run a pipeline watch (`gh run watch` or any equivalent) in your own foreground:** it blocks with no heartbeat, and a foreground command is capped at 10 minutes anyway — that combination is the original hang this design removed. A blocking watch is fine *inside* the waiter, where it is raced against the poll and the waiter is the thing emitting heartbeats. The rule is about who blocks, not about blocking.
 - A wait that produces no output is indistinguishable from a wait that died. If you are waiting, something must be emitting.
 
 ## Never
