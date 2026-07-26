@@ -65,6 +65,8 @@ Boards are addressed by **key** (e.g. `TSK`); tickets by **`KEY-N`** (e.g. `TSK-
 
 `init` installs the `kando`, `kando-refine`, and `kando-autonomous-loop` skills plus the `/kando-loop` and `/kando-refine` commands. See each skill for details; `/kando-loop` autonomously works tickets to completion and `/kando-refine` turns a ticket into a spec interactively.
 
+`/kando-loop` verifies each pushed change with a **probe command it composes by reading your repo** — GitHub Actions, GitLab CI, a `Makefile` target, or just your test suite. The probe reports green/red/pending through its exit code, and a background waiter (`.claude/hooks/kando-verify-wait.mjs`) polls it with a heartbeat so a slow pipeline is visible rather than a silent stall. There is no CI configuration to write.
+
 ## License
 
 MIT © 2026 Phillip Nientiedt
