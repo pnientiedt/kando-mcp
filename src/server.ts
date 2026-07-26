@@ -4,15 +4,20 @@ import { registerTicketTools } from './tools/tickets.js';
 import { registerRegistryTools } from './tools/registry.js';
 import { registerLoopTools } from './tools/loop.js';
 import { bulletproofHost } from './tools/safe.js';
+import { makeOnceNotice } from './sessionNotice.js';
 
-export function buildServer(gql: Gql, botEmail = ''): McpServer {
+export function buildServer(
+  gql: Gql,
+  opts: { email?: string; notice?: string | null } = {},
+): McpServer {
   const server = new McpServer({ name: 'kando', version: '0.1.0' });
   // Every handler is wrapped so a thrown error becomes an MCP error result
-  // rather than an escaped rejection that could kill the stdio session.
-  const host = bulletproofHost(server);
+  // rather than an escaped rejection that could kill the stdio session; the
+  // decorator prepends the one-time expiry notice to the first successful call.
+  const host = bulletproofHost(server, makeOnceNotice(opts.notice ?? null));
   registerReadTools(host, gql);
   registerTicketTools(host, gql);
   registerRegistryTools(host, gql);
-  registerLoopTools(host, gql, botEmail);
+  registerLoopTools(host, gql, opts.email ?? '');
   return server;
 }

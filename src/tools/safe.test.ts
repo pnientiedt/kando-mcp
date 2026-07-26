@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { bulletproofHost } from './safe.js';
 import { KandoError } from '../graphql.js';
+import { makeOnceNotice } from '../sessionNotice.js';
 import type { ToolHost } from './read.js';
 
 function capture() {
@@ -43,5 +44,21 @@ describe('bulletproofHost', () => {
     const res = await tools.ok({});
     expect(res.isError).toBeUndefined();
     expect(res.content[0].text).toBe('hi');
+  });
+
+  it('applies the decorator to the first success but never to an error', async () => {
+    const { host, tools } = capture();
+    const h = bulletproofHost(host, makeOnceNotice('⚠️ note'));
+    h.registerTool('boom', {}, async () => {
+      throw new KandoError('nope', 'BAD_INPUT');
+    });
+    h.registerTool('ok', {}, async () => ({ content: [{ type: 'text' as const, text: 'hi' }] }));
+    // An error result is not decorated (the once-notice does not fire on it)...
+    const err = await tools.boom({});
+    expect(err.content[0].text).not.toContain('note');
+    // ...so the first SUCCESSFUL result carries it.
+    const ok = await tools.ok({});
+    expect(ok.content[0].text).toBe('⚠️ note');
+    expect(ok.content[1].text).toBe('hi');
   });
 });
