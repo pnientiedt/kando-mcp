@@ -50,6 +50,36 @@ export function makeTokenProvider(deps: {
   };
 }
 
+/**
+ * One-shot SRP authentication returning the tokens. Used by both
+ * `srpTokenProvider` (server, email+password env) and the `login` command
+ * (which persists only the returned refresh token).
+ */
+export function srpLoginOnce(
+  config: PublicConfig,
+  creds: { email: string; password: string },
+): Promise<LoginResult> {
+  const pool = new CognitoUserPool({
+    UserPoolId: config.userPoolId,
+    ClientId: config.userPoolClientId,
+  });
+  const user = new CognitoUser({ Username: creds.email, Pool: pool });
+  return new Promise<LoginResult>((resolve, reject) => {
+    user.authenticateUser(
+      new AuthenticationDetails({ Username: creds.email, Password: creds.password }),
+      {
+        onSuccess: (s) =>
+          resolve({
+            idToken: s.getIdToken().getJwtToken(),
+            refreshToken: s.getRefreshToken().getToken(),
+            expiresAtMs: s.getIdToken().getExpiration() * 1000,
+          }),
+        onFailure: (err) => reject(err),
+      },
+    );
+  });
+}
+
 export function srpTokenProvider(
   config: PublicConfig,
   creds: { email: string; password: string },
@@ -60,21 +90,7 @@ export function srpTokenProvider(
   });
   const user = () => new CognitoUser({ Username: creds.email, Pool: pool });
 
-  const login = () =>
-    new Promise<LoginResult>((resolve, reject) => {
-      user().authenticateUser(
-        new AuthenticationDetails({ Username: creds.email, Password: creds.password }),
-        {
-          onSuccess: (s) =>
-            resolve({
-              idToken: s.getIdToken().getJwtToken(),
-              refreshToken: s.getRefreshToken().getToken(),
-              expiresAtMs: s.getIdToken().getExpiration() * 1000,
-            }),
-          onFailure: (err) => reject(err),
-        },
-      );
-    });
+  const login = () => srpLoginOnce(config, creds);
 
   const refresh = (refreshToken: string) =>
     new Promise<LoginResult>((resolve, reject) => {
