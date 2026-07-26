@@ -1,21 +1,25 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import { loadPublicConfig, loadCredentials } from './config.js';
 import { srpTokenProvider } from './auth.js';
+import { resolveLiveConfig } from './liveConfig.js';
 import { makeGqlClient, type GqlClient } from './graphql.js';
 import { registerReadTools, type ToolHost } from './tools/read.js';
 import { registerTicketTools } from './tools/tickets.js';
 
 /**
- * Live smoke test against the deployed Kando API as the bot account.
- * Skipped unless KANDO_LIVE=1 and mcp/.env holds the bot credentials.
- * Run: KANDO_LIVE=1 npx vitest run src/live.e2e.test.ts
+ * Live smoke test against a deployed Kando stage — intended to run against DEV,
+ * never Prod (KDO-63). Config + credentials come entirely from the environment
+ * via resolveLiveConfig, which refuses the Prod pool unless KANDO_ALLOW_PROD=1.
+ * Skipped unless KANDO_LIVE=1.
  *
- * Note: deleteBoard removes the board partition but NOT the global
- * BOARDKEY#<KEY> registry row (same gap the web e2e sweeps in its
- * global-teardown). Each run uses a random 8-letter key, so the orphaned
- * rows are harmless and never collide with real boards.
+ *   KANDO_LIVE=1 \
+ *   KANDO_TEST_REGION=eu-central-1 KANDO_TEST_POOL_ID=<dev pool> \
+ *   KANDO_TEST_CLIENT_ID=<dev client> KANDO_TEST_GRAPHQL_URL=<dev graphql> \
+ *   KANDO_TEST_EMAIL=<dev bot> KANDO_TEST_PASSWORD=<dev bot pw> \
+ *   npx vitest run src/live.e2e.test.ts
+ *
+ * Cleanup deletes the board via deleteBoard, which since KDO-52 also frees the
+ * global BOARDKEY#<KEY> registry row (best-effort) — so a run leaves nothing
+ * behind. Each run uses a random 8-letter key.
  */
 const LIVE = process.env.KANDO_LIVE === '1';
 
@@ -36,9 +40,7 @@ describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
   const tools: Record<string, (args: any) => Promise<any>> = {};
 
   beforeAll(async () => {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const config = loadPublicConfig();
-    const creds = loadCredentials(join(here, '..', '.env'));
+    const { config, creds } = resolveLiveConfig();
     gql = makeGqlClient(config, srpTokenProvider(config, creds));
 
     const host: ToolHost = {
