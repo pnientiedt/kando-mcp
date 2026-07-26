@@ -90,3 +90,54 @@ export function srpTokenProvider(
 
   return makeTokenProvider({ login, refresh });
 }
+
+const SESSION_EXPIRED = 'Kando session expired — run `kando-mcp login` again.';
+
+/**
+ * A refresh-only TokenProvider seeded from a stored refresh token. No password
+ * fallback: an expired/revoked token surfaces an actionable error telling the
+ * user to log in again, rather than hanging. `refresh` is injected for testing;
+ * `storedTokenProvider` wires the real Cognito refresh.
+ */
+export function makeStoredTokenProvider(
+  refreshToken: string,
+  refresh: (rt: string) => Promise<LoginResult>,
+): TokenProvider {
+  let cached: LoginResult | null = null;
+  return {
+    async getIdToken() {
+      try {
+        if (!cached || Date.now() >= cached.expiresAtMs - SKEW_MS) {
+          cached = await refresh(cached?.refreshToken ?? refreshToken);
+        }
+        return cached.idToken;
+      } catch {
+        throw new Error(SESSION_EXPIRED);
+      }
+    },
+    invalidate() {
+      cached = null;
+    },
+  };
+}
+
+export function storedTokenProvider(config: PublicConfig, refreshToken: string): TokenProvider {
+  const pool = new CognitoUserPool({
+    UserPoolId: config.userPoolId,
+    ClientId: config.userPoolClientId,
+  });
+  // Username is unused for a refresh call, but CognitoUser requires one.
+  const refresh = (rt: string) =>
+    new Promise<LoginResult>((resolve, reject) => {
+      const user = new CognitoUser({ Username: 'stored', Pool: pool });
+      user.refreshSession(new CognitoRefreshToken({ RefreshToken: rt }), (err, s) => {
+        if (err || !s) return reject(err ?? new Error('no session'));
+        resolve({
+          idToken: s.getIdToken().getJwtToken(),
+          refreshToken: s.getRefreshToken().getToken(),
+          expiresAtMs: s.getIdToken().getExpiration() * 1000,
+        });
+      });
+    });
+  return makeStoredTokenProvider(refreshToken, refresh);
+}
