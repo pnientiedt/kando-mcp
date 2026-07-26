@@ -249,15 +249,34 @@ export async function watch({
   // it just steps aside and lets the poll decide, which is the entire reason
   // the watch can only ever make this faster, never wrong.
   const handle = runWatchFn(watchCmd);
-  const fromWatch = handle.done.then((r) => {
-    if (r.verdict === 'unavailable') {
-      const tail = lastLine(r.out);
-      log(`[kando-verify-wait] watch unavailable — polling on${tail ? `: ${tail}` : ''}`);
-      return new Promise(() => {}); // never settles
-    }
+  const fromWatch = handle.done.then(async (r) => {
     const tail = lastLine(r.out);
-    log(`[kando-verify-wait] ${r.verdict} — watch: ${watchCmd}${tail ? ` — ${tail}` : ''}`);
-    return r.verdict === 'green' ? EXIT.green : EXIT.red;
+    if (r.verdict === 'unavailable') {
+      log(`[kando-verify-wait] watch unavailable — polling on${tail ? `: ${tail}` : ''}`);
+      return new Promise(() => {}); // never settles; the poll decides
+    }
+    if (r.verdict === 'green') {
+      log(`[kando-verify-wait] green — watch: ${watchCmd}${tail ? ` — ${tail}` : ''}`);
+      return EXIT.green;
+    }
+    // A red from the watch halts the ENTIRE run, so it is worth one cheap
+    // confirmation. It also has to be: cmd.exe collapses "command not found"
+    // into exit 1, indistinguishable from a genuine failure, so on Windows a
+    // missing `gh` would otherwise report a red pipeline instead of quietly
+    // falling back to the poll. Confirming keeps the promise that a watch can
+    // only ever make this faster, never wrong.
+    const { code } = await runProbeFn(probe, probeTimeoutMs);
+    const confirmed = classifyExit(code);
+    if (confirmed === 'red') {
+      log(`[kando-verify-wait] red — watch: ${watchCmd}${tail ? ` — ${tail}` : ''} (confirmed by probe)`);
+      return EXIT.red;
+    }
+    if (confirmed === 'green') {
+      log(`[kando-verify-wait] green — probe overrode a red watch; trusting the probe`);
+      return EXIT.green;
+    }
+    log(`[kando-verify-wait] watch said red but the probe says ${confirmed} — distrusting the watch, polling on`);
+    return new Promise(() => {});
   });
 
   const code = await Promise.race([fromWatch, pollLoop()]);

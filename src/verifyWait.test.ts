@@ -30,7 +30,16 @@ describe('runWatch', () => {
   // "unavailable", and the caller falls back to polling.
   it('reports any other exit as unavailable, never as a verdict', async () => {
     expect((await w.runWatch('node -e "process.exit(42)"').done).verdict).toBe('unavailable');
-    expect((await w.runWatch('definitely-not-a-real-command-xyz').done).verdict).toBe('unavailable');
+  });
+
+  // Shells disagree here and the test must not depend on it: POSIX `sh` exits
+  // 127 for an unknown command, but cmd.exe exits 1 — indistinguishable from a
+  // genuine failure. So the portable invariant is only that it is never GREEN;
+  // the red-vs-unavailable ambiguity is handled by confirming a red with the
+  // probe (see 'distrusts a red watch...' below).
+  it('never reports green for a command that does not exist', async () => {
+    const r = await w.runWatch('definitely-not-a-real-command-xyz').done;
+    expect(r.verdict).not.toBe('green');
   });
 
   // The handle must be usable BEFORE the watch finishes — that is the whole
@@ -200,11 +209,41 @@ describe('watch — watch/poll composition', () => {
       base({
         watchCmd: 'x',
         probe: 'p',
-        runWatchFn: fakeWatch('red'),
+        runWatchFn: fakeWatch('green'),
         runProbeFn: probeReturning([2]), // would poll forever
       }),
     );
+    expect(code).toBe(0);
+  });
+
+  it('confirms a red watch with the probe before halting the run', async () => {
+    const code = await w.watch(
+      base({
+        watchCmd: 'x',
+        probe: 'p',
+        runWatchFn: fakeWatch('red'),
+        runProbeFn: probeReturning([1]), // probe agrees
+      }),
+    );
     expect(code).toBe(1);
+  });
+
+  // cmd.exe exits 1 for a command that does not exist, which is
+  // indistinguishable from a real failure. A watch must never be able to halt
+  // the run on that, so a red it cannot corroborate is discarded.
+  it('distrusts a red watch the probe does not corroborate', async () => {
+    const logs: string[] = [];
+    const code = await w.watch(
+      base({
+        watchCmd: 'x',
+        probe: 'p',
+        runWatchFn: fakeWatch('red'),
+        runProbeFn: probeReturning([2, 2, 0]), // still pending, then green
+        log: (m: string) => logs.push(m),
+      }),
+    );
+    expect(code).toBe(0); // the poll decided, not the bogus red
+    expect(logs.join('\n')).toMatch(/distrusting the watch/);
   });
 
   it('falls back to the poll when the watch goes unavailable', async () => {
