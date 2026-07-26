@@ -115,6 +115,56 @@ export function runProbe(probe, timeoutMs, spawnFn = spawn) {
   });
 }
 
+/**
+ * Run a BLOCKING watch: one invocation that returns when the outcome is known
+ * (`gh run watch`, `glab ci status --wait`, or simply the repo's test suite).
+ *
+ * Deliberately has NO per-invocation timeout. A watch is *supposed* to block
+ * for as long as the work takes — that is the opposite of `runProbe`, which is
+ * a status query and must not hang. Conflating the two is what made a no-CI
+ * repo unresolvable in 0.2.0: `npm test` ran as a probe, got killed at 60s,
+ * was reported `pending`, and re-ran forever, so a passing suite never
+ * produced a verdict.
+ *
+ * Only 0 and 1 are verdicts. Anything else — a crashed CLI, a dropped network,
+ * a command that does not exist — is `unavailable`, and the caller falls back
+ * to polling. A watch can make the wait faster; it can never make it wrong.
+ *
+ * Returns `{ done, kill }` synchronously — `kill` must be usable while the
+ * watch is still running, so the poll can reap it on winning the race.
+ */
+export function runWatch(watchCmd, spawnFn = spawn) {
+  let child;
+  const done = new Promise((resolve) => {
+    let out = '';
+    let settled = false;
+    const finish = (verdict, extra = '') => {
+      if (settled) return;
+      settled = true;
+      resolve({ verdict, out: out + extra });
+    };
+    try {
+      child = spawnFn(watchCmd, { shell: true, detached: process.platform !== 'win32' });
+    } catch {
+      finish('unavailable', 'watch failed to start');
+      return;
+    }
+    child.stdout?.on('data', (d) => {
+      out += String(d);
+    });
+    child.stderr?.on('data', (d) => {
+      out += String(d);
+    });
+    child.on('error', () => finish('unavailable', out + 'watch failed to start'));
+    child.on('close', (code) => {
+      if (code === 0) finish('green');
+      else if (code === 1) finish('red');
+      else finish('unavailable', `\n[watch exited ${code} — not a verdict, falling back to polling]`);
+    });
+  });
+  return { done, kill: () => child && killTree(child) };
+}
+
 const lastLine = (s) => (s.trim() ? s.trim().split('\n').pop() : '');
 
 /**
@@ -125,55 +175,121 @@ const lastLine = (s) => (s.trim() ? s.trim().split('\n').pop() : '');
  */
 export async function watch({
   probe,
+  watchCmd,
   intervals = DEFAULT_INTERVALS_MS,
   probeTimeoutMs = DEFAULT_PROBE_TIMEOUT_MS,
   heartbeatMs = HEARTBEAT_INTERVAL_MS,
   log = (m) => console.log(m),
-  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  sleep,
   now = () => Date.now(),
   runProbeFn = runProbe,
+  runWatchFn = runWatch,
 }) {
+  if (!watchCmd && !probe) {
+    throw new Error('nothing to wait on: pass --watch, --probe, or both');
+  }
+
+  // The poll's sleep is tracked so a won race can cancel it. An outstanding
+  // 5-minute timer would otherwise hold the process open long after the
+  // verdict is in.
+  let pollTimer = null;
+  const doSleep = sleep ?? ((ms) => new Promise((r) => (pollTimer = setTimeout(r, ms))));
+  let stopped = false;
+  const stopPolling = () => {
+    stopped = true;
+    if (pollTimer) clearTimeout(pollTimer);
+  };
+
+  // --- watch only: run it once and take its answer. No polling exists here
+  // (a local test suite has no status to query), so an unavailable watch is
+  // unresolvable and must halt loudly rather than be guessed at.
+  if (watchCmd && !probe) {
+    const r = await runWatchFn(watchCmd).done;
+    const tail = lastLine(r.out);
+    log(`[kando-verify-wait] ${r.verdict} — watch: ${watchCmd}${tail ? ` — ${tail}` : ''}`);
+    if (r.verdict === 'green') return EXIT.green;
+    if (r.verdict === 'red') return EXIT.red;
+    log(`[kando-verify-wait] WATCH UNAVAILABLE and no --probe to fall back to. Cannot determine a verdict.`);
+    return EXIT.malformed;
+  }
+
   let prevStatus = null;
   let lastHeartbeat = -Infinity;
 
-  for (let i = 0; ; i++) {
-    const { code, out } = await runProbeFn(probe, probeTimeoutMs);
-    const status = classifyExit(code);
-    const t = now();
+  const pollLoop = async () => {
+    for (let i = 0; !stopped; i++) {
+      const { code, out } = await runProbeFn(probe, probeTimeoutMs);
+      if (stopped) break;
+      const status = classifyExit(code);
+      const t = now();
 
-    if (shouldHeartbeat(prevStatus, status, t - lastHeartbeat, heartbeatMs)) {
-      const tail = lastLine(out);
-      log(`[kando-verify-wait] ${status} — probe: ${probe}${tail ? ` — ${tail}` : ''}`);
-      lastHeartbeat = t;
-    }
-    prevStatus = status;
+      if (shouldHeartbeat(prevStatus, status, t - lastHeartbeat, heartbeatMs)) {
+        const tail = lastLine(out);
+        log(`[kando-verify-wait] ${status} — probe: ${probe}${tail ? ` — ${tail}` : ''}`);
+        lastHeartbeat = t;
+      }
+      prevStatus = status;
 
-    if (status === 'green') return EXIT.green;
-    if (status === 'red') return EXIT.red;
-    if (status === 'malformed') {
-      log(`[kando-verify-wait] MALFORMED PROBE — exit code ${code} is not 0/1/2. Probe: ${probe}`);
-      return EXIT.malformed;
+      if (status === 'green') return EXIT.green;
+      if (status === 'red') return EXIT.red;
+      if (status === 'malformed') {
+        log(`[kando-verify-wait] MALFORMED PROBE — exit code ${code} is not 0/1/2. Probe: ${probe}`);
+        return EXIT.malformed;
+      }
+      await doSleep(nextDelay(i, intervals));
     }
-    await sleep(nextDelay(i, intervals));
-  }
+    return null;
+  };
+
+  // --- poll only
+  if (!watchCmd) return pollLoop();
+
+  // --- both: the watch is primary, the poll is the safety net. First verdict
+  // wins; the loser is reaped. An unavailable watch never settles the race —
+  // it just steps aside and lets the poll decide, which is the entire reason
+  // the watch can only ever make this faster, never wrong.
+  const handle = runWatchFn(watchCmd);
+  const fromWatch = handle.done.then((r) => {
+    if (r.verdict === 'unavailable') {
+      const tail = lastLine(r.out);
+      log(`[kando-verify-wait] watch unavailable — polling on${tail ? `: ${tail}` : ''}`);
+      return new Promise(() => {}); // never settles
+    }
+    const tail = lastLine(r.out);
+    log(`[kando-verify-wait] ${r.verdict} — watch: ${watchCmd}${tail ? ` — ${tail}` : ''}`);
+    return r.verdict === 'green' ? EXIT.green : EXIT.red;
+  });
+
+  const code = await Promise.race([fromWatch, pollLoop()]);
+  stopPolling();
+  handle.kill();
+  return code;
 }
 
-/** CLI: --probe <cmd> [--interval-ms N] [--probe-timeout-ms N] */
+/**
+ * CLI: [--watch <cmd>] [--probe <cmd>] [--interval-ms N] [--probe-timeout-ms N]
+ *
+ * At least one of --watch / --probe. `--watch` blocks until the outcome is
+ * known and is the primary signal; `--probe` is polled and is the safety net.
+ */
 export function parseArgs(argv) {
   const get = (flag) => {
     const i = argv.indexOf(flag);
     return i >= 0 && i + 1 < argv.length ? argv[i + 1] : undefined;
   };
   const probe = get('--probe');
-  if (!probe) {
+  const watchCmd = get('--watch');
+  if (!probe && !watchCmd) {
     throw new Error(
-      'usage: kando-verify-wait.mjs --probe <command> [--interval-ms N] [--probe-timeout-ms N]',
+      'usage: kando-verify-wait.mjs [--watch <command>] [--probe <command>] ' +
+        '[--interval-ms N] [--probe-timeout-ms N] — at least one of --watch / --probe',
     );
   }
   const interval = get('--interval-ms');
   const timeout = get('--probe-timeout-ms');
   return {
     probe,
+    watchCmd,
     intervals: interval ? [Number(interval)] : DEFAULT_INTERVALS_MS,
     probeTimeoutMs: timeout ? Number(timeout) : DEFAULT_PROBE_TIMEOUT_MS,
   };
