@@ -11,6 +11,7 @@ import {
   ensureLoopAuthorization,
   relTargets,
   mcpServerEntry,
+  cleanupLegacy,
   init,
 } from './init.js';
 
@@ -143,5 +144,29 @@ describe('init (integration)', () => {
   it('throws when the target is not a git repo', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kando-init-nogit-'));
     expect(() => init(dir)).toThrow(/not a git repo/);
+  });
+});
+
+describe('cleanupLegacy', () => {
+  it('removes legacy .kando credential + bundle + bash-hook artifacts', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kando-cleanup-'));
+    mkdirSync(join(dir, '.kando', 'mcp'), { recursive: true });
+    mkdirSync(join(dir, '.kando', 'hooks'), { recursive: true });
+    writeFileSync(join(dir, '.kando', '.env'), 'KANDO_BOT_PASSWORD=secret');
+    writeFileSync(join(dir, '.kando', '.env.example'), 'x');
+    writeFileSync(join(dir, '.kando', 'mcp', 'server.mjs'), 'x');
+    writeFileSync(join(dir, '.kando', 'hooks', 'kando-workflow.sh'), 'x');
+    writeFileSync(join(dir, '.gitignore'), '.kando/.env\nnode_modules/\n');
+
+    const removed = cleanupLegacy(dir);
+
+    expect(existsSync(join(dir, '.kando'))).toBe(false);
+    expect(removed).toContain('.kando/.env');
+    expect(readFileSync(join(dir, '.gitignore'), 'utf8')).not.toContain('.kando/.env');
+  });
+
+  it('is a no-op when there is no .kando/', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kando-cleanup-none-'));
+    expect(cleanupLegacy(dir)).toEqual([]);
   });
 });

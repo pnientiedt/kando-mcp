@@ -6,6 +6,7 @@ import {
   copyFileSync,
   readdirSync,
   statSync,
+  rmSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -174,5 +175,46 @@ export function init(targetDir: string): void {
   const giPath = join(target, '.gitignore');
   writeFileSync(giPath, ensureGitignore(readText(giPath), '.claude/settings.local.json'));
 
-  // 7) legacy cleanup is wired in by Task A11 (cleanupLegacy).
+  // 7) remove stale artifacts from the old bundle-in-repo (bot credentials) model
+  cleanupLegacy(target);
+}
+
+/**
+ * Remove the dead per-repo artifacts of the old shared-bot install model:
+ * `.kando/.env` (+ example), the legacy `credentials` file, the vendored
+ * `.kando/mcp/` bundle, and the bash `.kando/hooks/kando-workflow.sh`. Removes
+ * the now-empty `.kando/`, and strips the `.kando/.env` line from `.gitignore`.
+ * A stale `.env` holding the old shared bot password must not linger. Returns
+ * the repo-relative paths removed (for logging). No-op when there's no `.kando/`.
+ */
+export function cleanupLegacy(target: string): string[] {
+  const removed: string[] = [];
+  const rmIf = (rel: string, recursive = false): void => {
+    const p = join(target, rel);
+    if (existsSync(p)) {
+      rmSync(p, { recursive, force: true });
+      removed.push(rel);
+    }
+  };
+  rmIf('.kando/.env');
+  rmIf('.kando/.env.example');
+  rmIf('.kando/credentials');
+  rmIf('.kando/mcp', true);
+  rmIf('.kando/hooks/kando-workflow.sh');
+
+  const hooks = join(target, '.kando', 'hooks');
+  if (existsSync(hooks) && readdirSync(hooks).length === 0) rmSync(hooks, { recursive: true, force: true });
+  const kando = join(target, '.kando');
+  if (existsSync(kando) && readdirSync(kando).length === 0) {
+    rmSync(kando, { recursive: true, force: true });
+    removed.push('.kando/');
+  }
+
+  const giPath = join(target, '.gitignore');
+  if (existsSync(giPath)) {
+    const gi = readFileSync(giPath, 'utf8');
+    const cleaned = removeGitignoreLine(gi, '.kando/.env');
+    if (cleaned !== gi) writeFileSync(giPath, cleaned);
+  }
+  return removed;
 }
