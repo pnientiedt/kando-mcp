@@ -1,13 +1,27 @@
 {
   "name": "kando-mcp",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "MCP server for the Kando Kanban board — read and edit tickets from Claude Code.",
   "license": "MIT",
   "type": "module",
-  "bin": { "kando-mcp": "dist/index.js" },
-  "files": ["dist", "skills", "commands", "assets", "kando.config.json", "README.md", "LICENSE"],
-  "engines": { "node": ">=20" },
-  "publishConfig": { "access": "public" },
+  "bin": {
+    "kando-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "commands",
+    "assets",
+    "kando.config.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
