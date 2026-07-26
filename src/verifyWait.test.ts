@@ -8,6 +8,43 @@ import { fileURLToPath } from 'node:url';
 const assetUrl = new URL('../assets/kando-verify-wait.mjs', import.meta.url).href;
 const w: any = await import(/* @vite-ignore */ assetUrl);
 
+describe('runWatch', () => {
+  // A watch BLOCKS for as long as the work takes — that is its whole job. It
+  // must not carry runProbe's short per-invocation timeout. Getting this wrong
+  // is what made a no-CI repo unresolvable in 0.2.0: `npm test` was run as a
+  // probe, killed at 60s, reported `pending`, and re-run forever, so a suite
+  // that PASSED never produced a verdict.
+  it('waits out a slow command and returns its verdict', async () => {
+    const started = Date.now();
+    const r = await w.runWatch('node -e "setTimeout(function(){process.exit(0)}, 1200)"').done;
+    expect(r.verdict).toBe('green');
+    expect(Date.now() - started).toBeGreaterThan(1000); // it really waited
+  });
+
+  it('maps a failing command to red', async () => {
+    expect((await w.runWatch('node -e "process.exit(1)"').done).verdict).toBe('red');
+  });
+
+  // A watch that dies for any other reason must NOT be authoritative — it can
+  // only ever make things faster, never wrong. Anything but 0/1 means
+  // "unavailable", and the caller falls back to polling.
+  it('reports any other exit as unavailable, never as a verdict', async () => {
+    expect((await w.runWatch('node -e "process.exit(42)"').done).verdict).toBe('unavailable');
+    expect((await w.runWatch('definitely-not-a-real-command-xyz').done).verdict).toBe('unavailable');
+  });
+
+  // The handle must be usable BEFORE the watch finishes — that is the whole
+  // point of returning it synchronously rather than after resolution.
+  it('exposes a kill handle while still running', async () => {
+    const h = w.runWatch('node -e "setTimeout(function(){process.exit(0)}, 30000)"');
+    const started = Date.now();
+    h.kill();
+    const r = await h.done;
+    expect(r.verdict).toBe('unavailable'); // killed, so not a verdict
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+});
+
 describe('nextDelay', () => {
   it('ramps 30s -> 60s -> 300s and then holds', () => {
     expect(w.nextDelay(0)).toBe(30_000);
@@ -121,6 +158,82 @@ const hangProbe = (ms: number) => `node -e "setTimeout(function(){}, ${ms})"`;
 const printThenExit = (printed: number, code: number) =>
   `node -e "console.log(${printed}); process.exit(${code})"`;
 
+describe('watch — watch/poll composition', () => {
+  const base = (over: any = {}) => ({
+    intervals: [1],
+    probeTimeoutMs: 10,
+    heartbeatMs: 300_000,
+    log: () => {},
+    sleep: async () => {},
+    now: () => 0,
+    ...over,
+  });
+  const fakeWatch = (verdict: string, out = '') => () => ({
+    done: Promise.resolve({ verdict, out }),
+    kill: () => {},
+  });
+  const probeReturning = (codes: number[]) => {
+    let i = 0;
+    return async () => ({ code: codes[Math.min(i++, codes.length - 1)], out: '' });
+  };
+
+  it('requires at least one of watch or probe', async () => {
+    await expect(w.watch(base())).rejects.toThrow(/--watch|--probe/);
+  });
+
+  it('watch alone is enough — no polling involved', async () => {
+    const code = await w.watch(base({ watchCmd: 'x', runWatchFn: fakeWatch('green') }));
+    expect(code).toBe(0);
+  });
+
+  it('watch alone that goes unavailable halts loudly rather than guessing', async () => {
+    const logs: string[] = [];
+    const code = await w.watch(
+      base({ watchCmd: 'x', runWatchFn: fakeWatch('unavailable'), log: (m: string) => logs.push(m) }),
+    );
+    expect(code).toBe(3);
+    expect(logs.join('\n')).toMatch(/UNAVAILABLE/i);
+  });
+
+  it('watch wins the race when both are present', async () => {
+    const code = await w.watch(
+      base({
+        watchCmd: 'x',
+        probe: 'p',
+        runWatchFn: fakeWatch('red'),
+        runProbeFn: probeReturning([2]), // would poll forever
+      }),
+    );
+    expect(code).toBe(1);
+  });
+
+  it('falls back to the poll when the watch goes unavailable', async () => {
+    const code = await w.watch(
+      base({
+        watchCmd: 'x',
+        probe: 'p',
+        runWatchFn: fakeWatch('unavailable'),
+        runProbeFn: probeReturning([2, 2, 0]),
+      }),
+    );
+    expect(code).toBe(0); // the poll decided it
+  });
+
+  it('kills the watch when the poll wins', async () => {
+    let killed = false;
+    const code = await w.watch(
+      base({
+        watchCmd: 'x',
+        probe: 'p',
+        runWatchFn: () => ({ done: new Promise(() => {}), kill: () => (killed = true) }),
+        runProbeFn: probeReturning([0]),
+      }),
+    );
+    expect(code).toBe(0);
+    expect(killed).toBe(true);
+  });
+});
+
 describe('runProbe', () => {
   it('reports a real command exit code', async () => {
     expect((await w.runProbe(printThenExit(9, 2), 5000)).code).toBe(2);
@@ -188,8 +301,20 @@ describe('parseArgs', () => {
     expect(a.probeTimeoutMs).toBe(60_000);
   });
 
-  it('rejects a missing probe', () => {
-    expect(() => w.parseArgs([])).toThrow(/--probe/);
+  it('reads a watch command', () => {
+    const a = w.parseArgs(['--watch', 'gh run watch 7 --exit-status']);
+    expect(a.watchCmd).toBe('gh run watch 7 --exit-status');
+    expect(a.probe).toBeUndefined();
+  });
+
+  it('accepts both', () => {
+    const a = w.parseArgs(['--watch', 'W', '--probe', 'P']);
+    expect(a.watchCmd).toBe('W');
+    expect(a.probe).toBe('P');
+  });
+
+  it('rejects having neither', () => {
+    expect(() => w.parseArgs([])).toThrow(/--watch|--probe/);
   });
 });
 
@@ -223,10 +348,31 @@ describe('CLI (integration)', () => {
     expect(r.out).toMatch(/MALFORMED PROBE/);
   });
 
-  it('exits 3 when no probe is given', async () => {
+  it('exits 3 when neither watch nor probe is given', async () => {
     const r = await runCli([]);
     expect(r.code).toBe(3);
-    expect(r.out).toMatch(/--probe/);
+    expect(r.out).toMatch(/--watch|--probe/);
+  });
+
+  // The 0.2.0 regression, end to end: a no-CI repo whose suite takes longer
+  // than the probe timeout. As a --probe this was killed, called `pending`,
+  // and re-run forever; as a --watch it simply runs to completion.
+  it('resolves a slow-but-passing suite given as a watch', async () => {
+    const started = Date.now();
+    const r = await runCli([
+      '--watch',
+      'node -e "setTimeout(function(){process.exit(0)}, 1500)"',
+      '--probe-timeout-ms',
+      '200',
+    ]);
+    expect(r.code).toBe(0);
+    expect(Date.now() - started).toBeGreaterThan(1300); // it waited, not killed
+  }, 15_000);
+
+  it('exits 3 when a watch-only run cannot produce a verdict', async () => {
+    const r = await runCli(['--watch', 'node -e "process.exit(42)"']);
+    expect(r.code).toBe(3);
+    expect(r.out).toMatch(/UNAVAILABLE/i);
   });
 
   it('keeps waiting on a hanging probe, reporting it as pending', async () => {
