@@ -1,0 +1,6 @@
+{
+  "region": "eu-central-1",
+  "userPoolId": "eu-central-1_djhXXORIL",
+  "userPoolClientId": "1p5gi7ptukhnvr17itpf34bmuh",
+  "graphqlUrl": "https://vwmek46crrdlziqsx3cpctue7e.appsync-api.eu-central-1.amazonaws.com/graphql"
+}
