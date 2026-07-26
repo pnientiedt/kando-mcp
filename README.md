@@ -17,7 +17,7 @@ npx kando-mcp login
 npx kando-mcp init
 ```
 
-Then **restart Claude Code** in that repo. Confirm the bot can see your boards by asking Claude to “list my Kando boards”.
+Then **restart Claude Code** in that repo. Confirm it works by asking Claude to “list my Kando boards”.
 
 `init` writes `.mcp.json` (pointing at `npx kando-mcp serve`), drops the `kando` skills/commands + a workflow hook into `.claude/`, and approves the server in `.claude/settings.local.json`. It never commits secrets.
 
