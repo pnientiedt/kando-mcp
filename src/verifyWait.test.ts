@@ -123,6 +123,15 @@ describe('runProbe', () => {
     expect(r.code).toBe(2);
     expect(r.out).toMatch(/exceeded/);
   });
+
+  // The trap that bit the documented `gh` probe: `gh --jq` PRINTS the verdict
+  // and exits 0 because gh itself succeeded, so a probe ending `; exit $?`
+  // reports green for a pending run. Stdout is never the verdict.
+  it('reads the exit code, never the printed output', async () => {
+    const r = await w.runProbe('echo 0; exit 2', 5000);
+    expect(r.code).toBe(2);
+    expect(w.classifyExit(r.code)).toBe('pending');
+  });
 });
 
 describe('parseArgs', () => {

@@ -16,9 +16,11 @@ You may be given **one OR MORE targets** (space-separated, e.g. `TSK-1 TSK-2 TSK
 **Before the first ticket, compose this repo's verification probe — once per run.** Read the repo and write a single shell command that answers "did commit `<sha>` end up green?" by its **exit code**: `0` green, `1` red, `2` still pending. Use `<sha>` as the placeholder; each worker's real sha is substituted at arming time. Work it out from what is actually in the repo — CI config, `Makefile`, `package.json` — rather than assuming a provider.
 
 Illustrations, **not a menu** — a Buildkite or Jenkins repo gets a probe you write by reading it:
-- GitHub Actions: `gh run list --commit <sha> --json status,conclusion --jq 'if length==0 then 2 elif (.[0].status!="completed") then 2 elif (.[0].conclusion=="success") then 0 else 1 end' ; exit $?`
-- GitLab CI: `glab ci status --sha <sha>` wrapped so it maps to 0/1/2.
+- GitHub Actions: `s=$(gh run list --commit <sha> --json status,conclusion --jq 'if length==0 then 2 elif (.[0].status!="completed") then 2 elif (.[0].conclusion=="success") then 0 else 1 end'); exit "${s:-3}"`
+- GitLab CI: `glab ci status --sha <sha>` wrapped the same way, so it maps to 0/1/2.
 - No CI at all: the repo's own test command, e.g. `npm test` — it exits 0 or 1 and never reports pending, which the waiter handles without a special case.
+
+**The verdict must be the probe's exit code, not something it prints.** `gh ... --jq '...'` *prints* the number and exits 0 because `gh` itself succeeded — a probe ending `; exit $?` therefore reports **green for a still-pending run**. Capture the output and exit with it, as above. The `${s:-3}` fallback matters too: if the CLI fails outright the substitution is empty, and `3` halts the loop loudly instead of silently passing the ticket.
 
 **A probe must never return `2` when no run will ever exist.** A push filtered out by path rules or branch conditions triggers no pipeline, and a naive "no run found yet → pending" probe then polls forever. Give the probe its own grace period: once the sha is on the target branch and no run has appeared within it, return `0`.
 
