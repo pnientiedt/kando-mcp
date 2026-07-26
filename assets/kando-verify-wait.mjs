@@ -46,6 +46,27 @@ export function shouldHeartbeat(
 }
 
 /**
+ * Kill a probe and everything it spawned. `shell: true` means the probe's real
+ * work is a GRANDCHILD of the shell we spawned, so killing only the shell
+ * leaves it running — still holding the stdout pipe open, so `close` never
+ * fires. On POSIX the child leads its own process group and the negative pid
+ * kills the whole group; Windows has no equivalent, which is why the caller
+ * must not depend on this succeeding.
+ */
+function killTree(child) {
+  try {
+    if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
+    else child.kill('SIGKILL');
+  } catch {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+/**
  * Run the probe once. A probe that overruns `timeoutMs` is killed and reported
  * as pending (code 2) — a hanging `gh`/`curl` must never wedge the poller, and
  * must never be mistaken for a verdict.
@@ -53,17 +74,29 @@ export function shouldHeartbeat(
 export function runProbe(probe, timeoutMs, spawnFn = spawn) {
   return new Promise((resolve) => {
     let out = '';
-    let timedOut = false;
+    let settled = false;
     let child;
+    const finish = (code, extra = '') => {
+      if (settled) return;
+      settled = true;
+      resolve({ code, out: out + extra });
+    };
     try {
-      child = spawnFn(probe, { shell: true });
+      // `detached` so the probe leads its own process group — see killTree.
+      child = spawnFn(probe, { shell: true, detached: process.platform !== 'win32' });
     } catch {
-      resolve({ code: 127, out: 'probe failed to start' });
+      finish(127, 'probe failed to start');
       return;
     }
     const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGKILL');
+      killTree(child);
+      // Resolve NOW rather than waiting for `close`. If the kill fails to reap
+      // a grandchild the poller must still move on: the whole point of this
+      // timeout is that no probe can ever wedge the loop, on any platform.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.unref?.();
+      finish(2, `\n[probe exceeded ${timeoutMs}ms — counted as pending]`);
     }, timeoutMs);
     child.stdout?.on('data', (d) => {
       out += String(d);
@@ -73,15 +106,11 @@ export function runProbe(probe, timeoutMs, spawnFn = spawn) {
     });
     child.on('error', () => {
       clearTimeout(timer);
-      resolve({ code: 127, out: out + 'probe failed to start' });
+      finish(127, 'probe failed to start');
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (timedOut) {
-        resolve({ code: 2, out: `${out}\n[probe exceeded ${timeoutMs}ms — counted as pending]` });
-      } else {
-        resolve({ code: code ?? 127, out });
-      }
+      finish(code ?? 127);
     });
   });
 }

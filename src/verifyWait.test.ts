@@ -113,22 +113,55 @@ describe('watch', () => {
   });
 });
 
+// Probes are run through a shell, so they must be written in something BOTH
+// sh and cmd.exe understand. `echo 0; exit 2` is not that: cmd has no `;`, so
+// it echoes the literal string and exits 0. Driving node is portable, and the
+// grandchild it creates under `shell: true` is exactly what killTree must reap.
+const hangProbe = (ms: number) => `node -e "setTimeout(function(){}, ${ms})"`;
+const printThenExit = (printed: number, code: number) =>
+  `node -e "console.log(${printed}); process.exit(${code})"`;
+
 describe('runProbe', () => {
   it('reports a real command exit code', async () => {
-    expect((await w.runProbe('exit 2', 5000)).code).toBe(2);
+    expect((await w.runProbe(printThenExit(9, 2), 5000)).code).toBe(2);
   });
 
-  it('counts a probe that overruns its timeout as pending, not failure', async () => {
-    const r = await w.runProbe('sleep 5', 150);
+  // Regression guard: the original implementation waited for `close` after
+  // killing the shell, but with `shell: true` the real probe is a GRANDCHILD
+  // that survives and holds the stdout pipe open. That made this resolve only
+  // once `sleep` finished on its own — i.e. a hanging probe wedged the poller
+  // on Linux and Windows, while passing on macOS where the shell execs.
+  // Asserting the ELAPSED TIME is what makes the bug visible; the exit code
+  // alone was green on macOS throughout.
+  it('gives up on an overrunning probe promptly, and calls it pending', async () => {
+    const started = Date.now();
+    const r = await w.runProbe(hangProbe(5000), 150);
+    const elapsed = Date.now() - started;
     expect(r.code).toBe(2);
     expect(r.out).toMatch(/exceeded/);
+    expect(elapsed).toBeLessThan(2000); // nowhere near the probe's own 5s
   });
 
   // The trap that bit the documented `gh` probe: `gh --jq` PRINTS the verdict
   // and exits 0 because gh itself succeeded, so a probe ending `; exit $?`
   // reports green for a pending run. Stdout is never the verdict.
+  // The macOS shell exec-optimises a simple command, so `hangProbe` alone has
+  // no grandchild there and the bug stayed invisible locally. This probe forces
+  // a genuine grandchild on EVERY platform, so the tree-kill path is covered
+  // even on the machine where the original bug could not reproduce.
+  it('gives up promptly even when the probe spawned a grandchild', async () => {
+    const nested =
+      `node -e "require('child_process').spawn(process.execPath,` +
+      `['-e','setTimeout(function(){},5000)'],{stdio:'inherit'}); ` +
+      `setTimeout(function(){},5000)"`;
+    const started = Date.now();
+    const r = await w.runProbe(nested, 200);
+    expect(r.code).toBe(2);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
   it('reads the exit code, never the printed output', async () => {
-    const r = await w.runProbe('echo 0; exit 2', 5000);
+    const r = await w.runProbe(printThenExit(0, 2), 5000);
     expect(r.code).toBe(2);
     expect(w.classifyExit(r.code)).toBe('pending');
   });
@@ -177,15 +210,15 @@ const runCli = (args: string[]) =>
 
 describe('CLI (integration)', () => {
   it('exits 0 on a green probe', async () => {
-    expect((await runCli(['--probe', 'exit 0'])).code).toBe(0);
+    expect((await runCli(['--probe', printThenExit(1, 0)])).code).toBe(0);
   });
 
   it('exits 1 on a red probe', async () => {
-    expect((await runCli(['--probe', 'exit 1'])).code).toBe(1);
+    expect((await runCli(['--probe', printThenExit(1, 1)])).code).toBe(1);
   });
 
   it('exits 3 on a malformed probe', async () => {
-    const r = await runCli(['--probe', 'exit 42']);
+    const r = await runCli(['--probe', printThenExit(1, 42)]);
     expect(r.code).toBe(3);
     expect(r.out).toMatch(/MALFORMED PROBE/);
   });
@@ -202,7 +235,7 @@ describe('CLI (integration)', () => {
     const c = spawn(process.execPath, [
       assetPath,
       '--probe',
-      'sleep 30',
+      hangProbe(5000),
       '--probe-timeout-ms',
       '150',
       '--interval-ms',
