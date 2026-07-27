@@ -40,9 +40,9 @@ If you can compose neither, skip the wait entirely and fall back to the green-lo
 2. Enforce safety BEFORE dispatching (cumulative across all targets):
    - If `done + human-needed ≥ 25` → **stop (max-tasks)**.
    - If the last **3** results in a row were `human-needed` → **stop (circuit breaker)**.
-3. Dispatch ONE worker subagent (Agent tool, general-purpose, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
+3. Dispatch ONE worker subagent (Agent tool, general-purpose, **`model: sonnet`**, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
 4. **Independent review inner loop** (max **3** rounds) — while the worker reports `ready-for-review`:
-   a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, general-purpose, **`run_in_background: false`**) with the **reviewer prompt** below, giving it the ticket intent and the diff. It returns a BLOCKING list and an ADVISORY list.
+   a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, general-purpose, **`model: sonnet`**, **`run_in_background: false`**) with the **reviewer prompt** below, giving it the ticket intent and the diff. It returns a BLOCKING list and an ADVISORY list.
    b. **No blocking findings** → SendMessage the worker: `review passed — ship it`. Go to step 5.
    c. **Blocking findings** → SendMessage the worker the findings. It fixes, recommits, and reports `ready-for-review` again. `round++`.
    d. If `round > 3` and still blocking → SendMessage the worker: `block it: <findings>`. It tags `human-needed` + writes a Blocked note; treat the result as `blocked`.
@@ -60,6 +60,22 @@ If you can compose neither, skip the wait entirely and fall back to the green-lo
 7. Loop back to step 1 for the **same target**.
 
 Final summary: cumulative counts of done / human-needed / skipped, the stop reason, and — if a limit tripped mid-run — which target it stopped on.
+
+## Model tiering — deliberate, not an oversight
+
+Workers and reviewers are dispatched with an explicit **`model: sonnet`**. Both execute
+against criteria that are already written down: the worker implements TDD against the
+ticket's `## 📋 Specification`, the reviewer judges a diff against stated intent. A run
+can boot 50–100 of these agents, so their tier dominates its cost.
+
+**You are the exception — do not override your own model.** The coordinator keeps the
+session model, because it holds the judgment seats: interpreting a waiter exit code,
+tripping the circuit breaker, deciding `block it`. Those are where a wrong call is
+expensive and rare enough not to matter to cost.
+
+**Never drop the reviewer to `haiku`.** Its hardest task is judging whether tests are
+trivial, gamed, or clearly not written test-first — the exact discrimination the review
+gate exists to make, and the last thing to cheapen.
 
 ## Worker prompt (one ticket; hands back to the coordinator at the review gate)
 
