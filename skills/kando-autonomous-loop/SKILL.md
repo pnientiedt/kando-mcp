@@ -56,9 +56,9 @@ per interruption — still far below one per worker.
 2. Enforce safety BEFORE dispatching (cumulative across all targets):
    - If `done + human-needed ≥ 25` → **stop (max-tasks)**.
    - If the last **3** results in a row were `human-needed` → **stop (circuit breaker)**.
-3. Dispatch ONE worker subagent (Agent tool, general-purpose, **`model: sonnet`**, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`, substituting this board's cached `<userSub>`, `<in-progress column>`, and `<last column>` into it. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
+3. Record the ticket's **base sha** (`git rev-parse HEAD`) — one line of output, and the reviewer's diff range for every round of this ticket. Then dispatch ONE worker subagent (Agent tool, general-purpose, **`model: sonnet`**, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`, substituting this board's cached `<userSub>`, `<in-progress column>`, and `<last column>` into it. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
 4. **Independent review inner loop** (max **3** rounds) — while the worker reports `ready-for-review`:
-   a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, general-purpose, **`model: sonnet`**, **`run_in_background: false`**) with the **reviewer prompt** below, giving it the ticket intent and the diff. It returns a BLOCKING list and an ADVISORY list.
+   a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, general-purpose, **`model: sonnet`**, **`run_in_background: false`**) with the **reviewer prompt** below, giving it the ticket intent and the **diff range** `<base-sha>..HEAD`. **Never run `git diff` yourself and never paste a diff into the prompt** — that pays for it twice, once in your context and once in the reviewer's, and you never read it. The reviewer runs the diff itself. Every round uses the SAME base sha, so each fresh reviewer sees the complete ticket diff, not just the latest fix. It returns a BLOCKING list and an ADVISORY list.
    b. **No blocking findings** → SendMessage the worker: `review passed — ship it`. Go to step 5.
    c. **Blocking findings** → SendMessage the worker the findings. It fixes, recommits, and reports `ready-for-review` again. `round++`.
    d. If `round > 3` and still blocking → SendMessage the worker: `block it: <findings>`. It tags `human-needed` + writes a Blocked note; treat the result as `blocked`.
@@ -113,7 +113,7 @@ Dispatch a general-purpose subagent with this instruction (substitute the real `
 
 Dispatch a FRESH general-purpose subagent (it did NOT write this code) with:
 
-> You are an INDEPENDENT code reviewer for Kando ticket **KEY-N**. You did not write this change; do not trust any implementer narrative. You are given the ticket **intent** (title/body/Plan) and the **diff** (`git diff` of the ticket's local commits). Review the diff directly and sort findings into two buckets and report both. (Do NOT try to invoke the `/code-review` skill — it can't be called by a subagent; apply code-review principles yourself.)
+> You are an INDEPENDENT code reviewer for Kando ticket **KEY-N**. You did not write this change; do not trust any implementer narrative. You are given the ticket **intent** (title/body/Plan) and a **diff range**. **Run `git diff <base-sha>..HEAD` yourself** — that is the complete change under review. Review the diff directly and sort findings into two buckets and report both. (Do NOT try to invoke the `/code-review` skill — it can't be called by a subagent; apply code-review principles yourself.)
 > - **BLOCKING** (must be fixed before this ships):
 >   - **correctness** — real bugs, logic errors, unhandled edge cases in the diff;
 >   - **adherence** — the change does not actually do what the ticket asked, or cuts corners; OR the tests are trivial / gamed / do not exercise the change / were clearly not written test-first; OR the change claims a "no testable surface" TDD exemption but a testable surface plainly exists.
