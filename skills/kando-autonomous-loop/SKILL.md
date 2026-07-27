@@ -167,6 +167,7 @@ Dispatch a FRESH general-purpose subagent (it did NOT write this code) with:
 - Short waits — worker dispatch, reviewer dispatch, review round-trips — are **synchronous** (`run_in_background: false`). The coordinator is strictly sequential and needs each result before continuing, so backgrounding them buys nothing and makes a lost notification fatal.
 - The one genuinely long wait — verification after a push — is a **heartbeat stream** via `Monitor`, never a blocking call *of yours*. **Never run a pipeline watch (`gh run watch` or any equivalent) in your own foreground:** it blocks with no heartbeat, and a foreground command is capped at 10 minutes anyway — that combination is the original hang this design removed. A blocking watch is fine *inside* the waiter, where it is raced against the poll and the waiter is the thing emitting heartbeats. The rule is about who blocks, not about blocking.
 - A wait that produces no output is indistinguishable from a wait that died. If you are waiting, something must be emitting.
+- **A permission prompt is a silent wait too.** `kando-mcp init` pre-grants the board tools this loop calls, so an unattended run never blocks on one. If a dispatch reports a missing permission, the repo was installed by an older `init` — re-run it rather than sitting there. The destructive tools are deliberately *not* pre-granted, and the `kando-worker` agent withholds them independently.
 
 ## Never
 

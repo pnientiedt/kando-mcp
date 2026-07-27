@@ -26,6 +26,41 @@ export function ensureLoopAuthorization(text: string): string {
   return (base ? base + '\n\n' : '') + LOOP_AUTH_BLOCK + '\n';
 }
 
+/**
+ * The Kando tools the autonomous loop actually calls, pre-granted so an unattended run
+ * cannot stall on a permission prompt — a wait that emits nothing, which is the exact
+ * failure mode the loop's liveness design exists to remove.
+ *
+ * Destructive tools are deliberately absent. `delete_ticket` is permanent, and
+ * `delete_tag` / `delete_release` strip from every item on the board; a run with standing
+ * authorization to push should not be one stray instruction away from any of them. The
+ * shipped `kando-worker` agent also withholds them, so this list is the second of two
+ * independent barriers rather than the only one.
+ */
+export const LOOP_TOOL_PERMISSIONS = [
+  'mcp__kando__list_boards',
+  'mcp__kando__get_board',
+  'mcp__kando__get_ticket',
+  'mcp__kando__search_tickets',
+  'mcp__kando__next_task',
+  'mcp__kando__ensure_tag',
+  'mcp__kando__update_ticket',
+  'mcp__kando__move_ticket',
+  'mcp__kando__create_story',
+  'mcp__kando__create_subtask',
+];
+
+/** Add tool permissions to settings.permissions.allow. Idempotent; preserves everything else. */
+export function ensureToolPermissions(settings: any, tools: string[]): any {
+  const out = settings && typeof settings === 'object' ? { ...settings } : {};
+  const permissions = { ...(out.permissions ?? {}) };
+  const allow = Array.isArray(permissions.allow) ? [...permissions.allow] : [];
+  for (const tool of tools) if (!allow.includes(tool)) allow.push(tool);
+  permissions.allow = allow;
+  out.permissions = permissions;
+  return out;
+}
+
 /** Destination repo-relative paths for a set of skill + command + agent source files (used in tests). */
 export function relTargets(skillFiles: string[], commandFiles: string[], agentFiles: string[] = []) {
   return {
@@ -135,7 +170,8 @@ function readText(p: string): string {
 /**
  * Wire the Kando MCP into a target repo (cross-platform, pure Node):
  * `.mcp.json` → `npx kando-mcp serve`, skills/commands/agents into `.claude/`, the Node
- * workflow hook, settings approval + hook registration, CLAUDE.md loop-auth, and
+ * workflow hook, settings approval + hook registration + loop tool permissions,
+ * CLAUDE.md loop-auth, and
  * `.gitignore` for the personal settings file. `init` also runs legacy cleanup
  * (see cleanupLegacy in this module).
  */
@@ -172,6 +208,7 @@ export function init(targetDir: string): void {
   const settingsPath = join(target, '.claude', 'settings.local.json');
   let settings = enableMcpServer(readJson(settingsPath), 'kando');
   settings = ensureWorkflowHook(settings, hookCmd);
+  settings = ensureToolPermissions(settings, LOOP_TOOL_PERMISSIONS);
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
 
   // 5) CLAUDE.md loop-auth

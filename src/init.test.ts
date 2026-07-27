@@ -8,6 +8,8 @@ import {
   removeGitignoreLine,
   enableMcpServer,
   ensureWorkflowHook,
+  ensureToolPermissions,
+  LOOP_TOOL_PERMISSIONS,
   ensureLoopAuthorization,
   relTargets,
   mcpServerEntry,
@@ -25,6 +27,35 @@ describe('mcpServerEntry', () => {
       command: 'cmd',
       args: ['/c', 'npx', '-y', 'kando-mcp', 'serve'],
     });
+  });
+});
+
+describe('ensureToolPermissions', () => {
+  it('adds the given tools to permissions.allow', () => {
+    const out = ensureToolPermissions({}, ['mcp__kando__get_ticket', 'mcp__kando__move_ticket']);
+    expect(out.permissions.allow).toEqual(['mcp__kando__get_ticket', 'mcp__kando__move_ticket']);
+  });
+
+  it('preserves unrelated entries already in the allow list', () => {
+    const out = ensureToolPermissions(
+      { permissions: { allow: ['Bash(npm test)'], deny: ['Bash(rm:*)'] } },
+      ['mcp__kando__get_ticket'],
+    );
+    expect(out.permissions.allow).toEqual(['Bash(npm test)', 'mcp__kando__get_ticket']);
+    expect(out.permissions.deny).toEqual(['Bash(rm:*)']);
+  });
+
+  it('is idempotent', () => {
+    const once = ensureToolPermissions({}, ['mcp__kando__get_ticket']);
+    expect(ensureToolPermissions(once, ['mcp__kando__get_ticket'])).toEqual(once);
+  });
+
+  it('never pre-grants a destructive tool', () => {
+    // The loop runs unattended with standing push authorization. Granting these by
+    // default would put a permanent delete one stray instruction away.
+    for (const forbidden of ['delete_ticket', 'delete_tag', 'delete_release', 'archive_ticket']) {
+      expect(LOOP_TOOL_PERMISSIONS).not.toContain(`mcp__kando__${forbidden}`);
+    }
   });
 });
 
@@ -139,6 +170,9 @@ describe('init (integration)', () => {
     expect(existsSync(join(dir, '.claude', 'skills', 'kando', 'SKILL.md'))).toBe(true);
     expect(existsSync(join(dir, '.claude', 'agents', 'kando-reviewer.md'))).toBe(true);
     expect(existsSync(join(dir, '.claude', 'agents', 'kando-worker.md'))).toBe(true);
+    const written = JSON.parse(readFileSync(join(dir, '.claude', 'settings.local.json'), 'utf8'));
+    expect(written.permissions.allow).toContain('mcp__kando__update_ticket');
+    expect(written.permissions.allow).not.toContain('mcp__kando__delete_ticket');
     expect(existsSync(join(dir, '.claude', 'commands', 'kando-loop.md'))).toBe(true);
     expect(existsSync(join(dir, '.claude', 'hooks', 'kando-workflow.mjs'))).toBe(true);
     expect(existsSync(join(dir, '.claude', 'hooks', 'kando-verify-wait.mjs'))).toBe(true);
