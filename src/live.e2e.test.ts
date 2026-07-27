@@ -60,7 +60,18 @@ describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
   }, 30_000);
 
   afterAll(async () => {
-    if (boardId) await gql(DELETE_BOARD, { boardId }).catch(() => {});
+    if (!boardId) return;
+    // A failed delete strands the board *and* its BOARDKEY#<KEY> registry row —
+    // exactly the orphan this cleanup exists to prevent. Fail loudly; a silent
+    // catch here is how the existing Prod orphans went unnoticed.
+    try {
+      await gql(DELETE_BOARD, { boardId });
+    } catch (err) {
+      throw new Error(
+        `live e2e LEAKED board ${boardKey} (${boardId}) — delete it and its ` +
+          `BOARDKEY#${boardKey} row by hand. Cause: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   });
 
   it('login works and the new board is listed', async () => {

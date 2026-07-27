@@ -69,6 +69,32 @@ Boards are addressed by **key** (e.g. `TSK`); tickets by **`KEY-N`** (e.g. `TSK-
 
 A background waiter (`.claude/hooks/kando-verify-wait.mjs`) runs them and reports the verdict through exit codes. It takes a **watch** (blocks until the outcome is known — the fast path) and/or a **probe** (polled status query — the safety net), and needs at least one. With both, whichever answers first wins, so a watch that hangs or dies can never strand the loop. A repo with no CI just gets a watch: its test suite runs to completion, however long it takes.
 
+## Configuration & tests
+
+There is exactly one committed config, and it is **not** what the tests use.
+
+| | `kando.config.json` | the live e2e test |
+|---|---|---|
+| What it is | region, Cognito pool/client, and GraphQL URL of the **hosted production** Kando | the same four values, supplied per-run via `KANDO_TEST_*` env vars |
+| Who reads it | the installed server (`serve`, `login`, `init`) — i.e. real work against your real boards | `src/live.e2e.test.ts` only |
+| Committed? | yes, it's public config | no — nothing about the test target is committed, credentials least of all |
+
+They are kept separate on purpose: the two stages differ only by opaque ids, so a test that inherited its target from the shipped config could run against production and still look green.
+
+`npm test` runs the whole suite **offline** — no network, no account needed. The one test that talks to a real backend, `src/live.e2e.test.ts`, is skipped unless you opt in:
+
+```bash
+KANDO_LIVE=1 \
+KANDO_TEST_REGION=… KANDO_TEST_POOL_ID=… \
+KANDO_TEST_CLIENT_ID=… KANDO_TEST_GRAPHQL_URL=… \
+KANDO_TEST_EMAIL=… KANDO_TEST_PASSWORD=… \
+npx vitest run src/live.e2e.test.ts
+```
+
+Point it at a **non-production** stage. All six variables are required — there is no default and no fallback to `kando.config.json`. As a backstop, the resolver **refuses the production pool id outright**; override with `KANDO_ALLOW_PROD=1` only if you genuinely mean it.
+
+The test creates a board under a random 8-letter key and deletes it afterwards, which also frees the global `BOARDKEY#<KEY>` registry entry. If that cleanup fails the test fails loudly and names the board to remove by hand.
+
 ## License
 
 MIT © 2026 Phillip Nientiedt
