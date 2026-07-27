@@ -57,7 +57,7 @@ per interruption — still far below one per worker.
 2. Enforce safety BEFORE dispatching (cumulative across all targets):
    - If `done + human-needed ≥ 25` → **stop (max-tasks)**.
    - If the last **3** results in a row were `human-needed` → **stop (circuit breaker)**.
-3. Record the ticket's **base sha** (`git rev-parse HEAD`) — one line of output, and the reviewer's diff range for every round of this ticket. Then dispatch ONE worker subagent (Agent tool, general-purpose, **`model: sonnet`**, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`, substituting this board's cached `<userSub>`, `<in-progress column>`, and `<last column>` into it. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
+3. Record the ticket's **base sha** (`git rev-parse HEAD`) — one line of output, and the reviewer's diff range for every round of this ticket. Then dispatch ONE worker subagent (Agent tool, **`subagent_type: kando-worker`**, **`model: sonnet`**, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`, substituting this board's cached `<userSub>`, `<in-progress column>`, and `<last column>` into it. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
 4. **Independent review inner loop** (max **3** rounds) — while the worker reports `ready-for-review`:
    a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, **`subagent_type: kando-reviewer`**, **`model: sonnet`**, **`run_in_background: false`**) with the **reviewer prompt** below, giving it the ticket intent and the **diff range** `<base-sha>..HEAD`. **Never run `git diff` yourself and never paste a diff into the prompt** — that pays for it twice, once in your context and once in the reviewer's, and you never read it. The reviewer runs the diff itself. Every round uses the SAME base sha, so each fresh reviewer sees the complete ticket diff, not just the latest fix. It returns a BLOCKING list and an ADVISORY list.
    b. **No blocking findings** → SendMessage the worker: `review passed — ship it`. Go to step 5.
@@ -94,15 +94,31 @@ expensive and rare enough not to matter to cost.
 trivial, gamed, or clearly not written test-first — the exact discrimination the review
 gate exists to make, and the last thing to cheapen.
 
-**The reviewer runs as `kando-reviewer`, a tool-restricted agent** that `kando-mcp init`
-installs into `.claude/agents/`. It has no board tools and no edit tools, so it *cannot*
-move a ticket or push — the independence the review gate depends on is enforced by its
-toolset rather than by asking nicely. It also skips loading all 21 Kando tool schemas it
-would never call.
+## Both subagents are tool-restricted — for safety, not for tokens
 
-**If that agent type is unavailable** (an older `init`, or a repo where the file was not
-installed), fall back to `general-purpose` and carry on — the review still works, it just
-costs more and leans on the prompt for independence.
+`kando-mcp init` installs two agent definitions into `.claude/agents/`, and the loop
+dispatches them by `subagent_type`:
+
+- **`kando-reviewer`** has no board tools and no edit tools. It *cannot* move a ticket or
+  push, so the independence the review gate depends on is enforced by its toolset rather
+  than by asking nicely.
+- **`kando-worker`** holds 8 of the server's 21 board tools — enough to read a ticket,
+  update and move the one it was given, ensure a tag, and create a story or subtask to
+  record a finding. It has **no** `delete_ticket`, `archive_ticket`, `delete_tag`, or
+  `delete_release`. This loop runs unattended, with standing authorization to push,
+  across up to 25 tickets; nothing destructive should be within reach of the agent doing
+  the work.
+
+**The token saving is small** — MCP schemas load on demand, so a restriction drops tool
+*names*, not full schemas. Take these restrictions for the blast radius they remove.
+
+**If either agent type is unavailable** — an older `init`, a repo where the files were
+not installed, or a session started *before* they were — the dispatch fails with
+`Agent type not found`. That is a hard error, not a silent fallback: catch it, re-dispatch
+that one agent as `general-purpose`, and carry on. The loop still works; it just leans on
+the prompt for the guarantees the toolset would have enforced. **Agent definitions are
+read at session start**, so a fresh `init` does not take effect until the session is
+restarted.
 
 ## Worker prompt (one ticket; hands back to the coordinator at the review gate)
 

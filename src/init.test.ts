@@ -138,6 +138,7 @@ describe('init (integration)', () => {
 
     expect(existsSync(join(dir, '.claude', 'skills', 'kando', 'SKILL.md'))).toBe(true);
     expect(existsSync(join(dir, '.claude', 'agents', 'kando-reviewer.md'))).toBe(true);
+    expect(existsSync(join(dir, '.claude', 'agents', 'kando-worker.md'))).toBe(true);
     expect(existsSync(join(dir, '.claude', 'commands', 'kando-loop.md'))).toBe(true);
     expect(existsSync(join(dir, '.claude', 'hooks', 'kando-workflow.mjs'))).toBe(true);
     expect(existsSync(join(dir, '.claude', 'hooks', 'kando-verify-wait.mjs'))).toBe(true);
