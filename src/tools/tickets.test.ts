@@ -146,7 +146,10 @@ describe('create_story / create_subtask position', () => {
     const gql = vi.fn(async (query: string) => {
       calls.push(query);
       if (query.includes('myBoards')) return { myBoards: [{ id: 'b1', key: 'KDO' }] };
-      return { createStory: { story: { id: 's3' } } };
+      // A create now always reads the board: it resolves the column label and
+      // needs the board key to name the new ticket in its ack.
+      if (query.includes('getBoard')) return boardPayload();
+      return { createStory: { story: { id: 's3', num: 3 } } };
     });
     const { host, tools } = captureHost();
     registerTicketTools(host, gql as never);
@@ -190,5 +193,121 @@ describe('create_story / create_subtask position', () => {
       rank: expect.any(String),
     });
     expect(update!.variables.rank < 'b').toBe(true);
+  });
+});
+
+/** A board with two columns, one tag and one member — enough to resolve against. */
+function fullBoard() {
+  return {
+    getBoard: {
+      board: {
+        id: 'b1',
+        key: 'KDO',
+        columns: [
+          { id: 'open', label: 'Open', order: 0 },
+          { id: 'wip', label: 'In Progress', order: 1 },
+        ],
+      },
+      stories: [{ id: 's1', num: 54, columnId: 'open', rank: 'b', archivedAt: null, subtasks: [] }],
+      tags: [{ id: 't1', name: 'refined' }],
+      releases: [],
+      members: [{ userSub: 'u1', email: 'bot@example.com', role: 'EDITOR' }],
+    },
+  };
+}
+
+const ticketGql = (calls: any[], extra: (q: string) => any = () => ({})) =>
+  vi.fn(async (q: string, v: any) => {
+    calls.push({ q, v });
+    if (q.includes('resolveTicket')) {
+      return { resolveTicket: { boardId: 'b1', storyId: 's1', subtaskId: null } };
+    }
+    if (q.includes('myBoards')) return { myBoards: [{ id: 'b1', key: 'KDO' }] };
+    if (q.includes('getBoard')) return fullBoard();
+    return extra(q);
+  });
+
+describe('mutations return an ack, not the object', () => {
+  it('move_ticket accepts a column LABEL and acks with it', async () => {
+    const calls: any[] = [];
+    const gql = ticketGql(calls, () => ({ updateStory: { story: { id: 's1', num: 54 } } }));
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gql as never, 'bot@example.com');
+
+    const out = JSON.parse(
+      (await tools.move_ticket({ ticket: 'KDO-54', column: 'In Progress' })).content[0].text,
+    );
+    expect(out).toEqual({ ticket: 'KDO-54', col: 'In Progress' });
+    expect(calls.find((c) => c.q.includes('updateStory'))!.v).toEqual({
+      boardId: 'b1',
+      storyId: 's1',
+      columnId: 'wip',
+    });
+  });
+
+  it('update_ticket resolves tag names and "me", and acks with the changed fields', async () => {
+    const calls: any[] = [];
+    const gql = ticketGql(calls, () => ({ updateStory: { story: { id: 's1', num: 54 } } }));
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gql as never, 'bot@example.com');
+
+    const out = JSON.parse(
+      (
+        await tools.update_ticket({
+          ticket: 'KDO-54',
+          body: 'new',
+          tags: ['refined'],
+          assignee: 'me',
+        })
+      ).content[0].text,
+    );
+    expect(out).toEqual({ ticket: 'KDO-54', updated: ['body', 'tags', 'assignee'] });
+    const v = calls.find((c) => c.q.includes('updateStory'))!.v;
+    expect(v.tags).toEqual(['t1']);
+    expect(v.assignee).toBe('u1');
+  });
+
+  it('an unknown tag name is an error naming ensure_tag', async () => {
+    const calls: any[] = [];
+    const gql = ticketGql(calls);
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gql as never, null);
+    await expect(tools.update_ticket({ ticket: 'KDO-54', tags: ['nope'] })).rejects.toThrow(
+      /ensure_tag/,
+    );
+  });
+
+  it('unarchive_ticket acks instead of echoing the story', async () => {
+    const calls: any[] = [];
+    const gql = ticketGql(calls, () => ({ unarchiveStory: { story: { id: 's1', num: 54 } } }));
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gql as never, null);
+    expect(
+      JSON.parse((await tools.unarchive_ticket({ ticket: 'KDO-54' })).content[0].text),
+    ).toEqual({ unarchived: 'KDO-54' });
+  });
+
+  it('reorder_ticket acks the position', async () => {
+    const calls: any[] = [];
+    const gql = ticketGql(calls, () => ({ updateStory: { story: { id: 's1', num: 54 } } }));
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gql as never, null);
+    expect(
+      JSON.parse((await tools.reorder_ticket({ ticket: 'KDO-54', to: 'top' })).content[0].text),
+    ).toEqual({ ticket: 'KDO-54', position: 'top' });
+  });
+
+  it('create_story acks with the new KEY-N and column label', async () => {
+    const calls: any[] = [];
+    const gql = ticketGql(calls, (q) =>
+      q.includes('createStory') ? { createStory: { story: { id: 's9', num: 63 } } } : {},
+    );
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gql as never, null);
+    const out = JSON.parse(
+      (await tools.create_story({ board: 'KDO', title: 'New', column: 'In Progress' })).content[0]
+        .text,
+    );
+    expect(out).toEqual({ ticket: 'KDO-63', title: 'New', col: 'In Progress' });
   });
 });
