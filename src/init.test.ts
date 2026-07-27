@@ -74,6 +74,33 @@ describe('ensureLoopAuthorization', () => {
     const out = ensureLoopAuthorization('');
     expect(out.startsWith('## Kando')).toBe(true);
   });
+
+  it('replaces a stale block rather than leaving it', () => {
+    // A repo installed before batched deploys carries the old wording. Re-running
+    // init must refresh it, or the repo authorizes something the loop no longer does.
+    const stale =
+      '# P\n\n## Kando autonomous loop — deploy authorization\n\nOld wording: subagents push to `main`.\n';
+    const out = ensureLoopAuthorization(stale);
+    expect(out).toContain('# P');
+    expect(out).not.toContain('Old wording');
+    expect(out).toContain('kando-loop/*');
+    expect((out.match(/## Kando autonomous loop — deploy authorization/g) ?? []).length).toBe(1);
+  });
+
+  it('preserves sections that follow the block when replacing', () => {
+    const stale =
+      '# P\n\n## Kando autonomous loop — deploy authorization\n\nOld wording.\n\n## My own rules\n\nKeep me.\n';
+    const out = ensureLoopAuthorization(stale);
+    expect(out).toContain('## My own rules');
+    expect(out).toContain('Keep me.');
+    expect(out).not.toContain('Old wording');
+  });
+
+  it('says the coordinator owns main and workers stay on the branch', () => {
+    const out = ensureLoopAuthorization('');
+    expect(out).toContain('kando-loop/*');
+    expect(out).toMatch(/coordinator, not a worker, is what touches/);
+  });
 });
 
 describe('relTargets', () => {
