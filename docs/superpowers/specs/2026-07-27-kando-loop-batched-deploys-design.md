@@ -95,11 +95,18 @@ snoozed ticket reads to a human as "not yet relevant"; the state we are recordin
 A **flush** is: merge the loop branch into `main`, push, deploy, run the full
 verification. Three things trigger one.
 
-**A story completes.** `next_task` already returns `storyId` for a subtask, and its
-ordering drains one container story before starting another. So the coordinator
-compares the `storyId` of the task it just finished against the next one: if it
-differs, or `next_task` returns `{none: true}`, that story is complete — flush before
-dispatching the next worker. This costs no extra board calls.
+**A container story completes.** `next_task` returns `storyId` for a subtask, and its
+ordering drains one container story before starting another. So when the ticket just
+finished was a **subtask**, the coordinator compares its `storyId` against the next
+task's: if it differs, or `next_task` returns `{none: true}`, that story is complete —
+flush before dispatching the next worker. This costs no extra board calls.
+
+**A standalone story finishing is deliberately NOT a trigger.** `storyId` is `undefined`
+for a standalone story, and that `undefined` must not be read as a boundary against the
+next ticket's `storyId` — it is the absence of a story, not a different one. Reading it
+as a boundary would give a one-line flaky-test fix its own production deploy, the exact
+outcome this design exists to prevent. A standalone story parks on the branch and rides
+along with the next batch, or ships at the exit flush.
 
 **The coordinator judges it worth shipping.** Beyond the mechanical boundary, the
 coordinator may flush when the accumulated work reads as a coherent, deployable unit.

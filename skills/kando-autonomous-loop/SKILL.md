@@ -95,11 +95,15 @@ fetch per interruption — still far below one per worker.
 6. Read the worker's final report and **verify** it via `get_ticket`:
    - `pushed` → the ticket MUST carry `claude` + `pending-ship`, sit in the in-progress column, and have `## 🤖 Claude — Plan` and `## 🤖 Claude — Done` sections. It is **not** Done — you set that at the flush.
    - `blocked` → the ticket MUST carry `claude` + `human-needed`. Count it toward the circuit breaker.
-7. **Decide whether to flush**, then loop back to step 1 for the **same target**. Call `next_task(target)` here and carry its result into step 1 — one call, used for both:
-   - Its `storyId` **differs** from the ticket you just finished, or it returned `{ "none": true }` → **that story is complete. Flush now**, then continue.
-   - **Same `storyId`** → the story has more subtasks. Keep working. Do **not** flush per subtask; that is the entire point of this design.
-   - You may **also** flush on judgement, when what has accumulated reads as a coherent unit somebody would actually deploy. Standing bias: a chore, a flaky-test fix, a docs or config change never earns a deploy of its own.
-   - `next_task` returns `storyId` only for **subtasks**. A run of standalone stories has no story boundary to detect, so it leans on your judgement plus the exit flush.
+7. **Decide whether to flush**, then loop back to step 1 for the **same target**. Call `next_task(target)` here and carry its result into step 1 — one call, used for both.
+
+   **The mechanical trigger is a CONTAINER STORY completing — nothing else.** It applies only when the ticket you just finished was a **subtask**:
+   - finished a **subtask**, and the next task's `storyId` differs or it returned `{ "none": true }` → **that story is complete. Flush now**, then continue;
+   - finished a **subtask**, same `storyId` → the story has more subtasks. Keep working. Do **not** flush per subtask; that is the entire point of this design.
+
+   **A standalone story finishing is NOT a trigger.** `next_task` sets `storyId` only for subtasks, so a standalone story reports `undefined`. Do not read that `undefined` as a story boundary against the next ticket's `storyId` — it is the *absence* of a story, not a different one. Treating it as a boundary is how a one-line flaky-test fix ends up buying its own production deploy, which is exactly what this design exists to prevent. Let it park on the branch and ride along with the next batch.
+
+   Beyond that trigger you may flush **on judgement**, when what has accumulated reads as a coherent unit somebody would actually deploy. Standing bias: a chore, a flaky-test fix, a docs or config change never earns a deploy of its own. A run of nothing but standalone stories has no mechanical boundary at all — it leans entirely on this judgement plus the exit flush, and the exit flush guarantees nothing is stranded.
 
 Final summary: cumulative counts of done / human-needed / skipped, the stop reason, and — if a limit tripped mid-run — which target it stopped on. Also report the **loop branch name**, the **batches shipped** (merge sha per batch), and any tickets left `pending-ship`.
 
@@ -109,7 +113,8 @@ A **flush** is the only thing that ships: merge the loop branch into `main`, pus
 deploy, and run the repo's full verification once for the whole batch. **You** do this —
 never a worker. Three things trigger one:
 
-- **a story completes** — step 7's `storyId` comparison, or `{ "none": true }`;
+- **a container story completes** — step 7's `storyId` comparison after a **subtask**, or
+  `{ "none": true }`. A standalone story finishing is *not* a trigger;
 - **your judgement** — the accumulated work reads as a coherent, deployable unit;
 - **the run is about to exit** — for *any* reason: target exhausted, max-tasks, circuit
   breaker. Nothing is ever left silently unshipped. (The one exception is a red flush
