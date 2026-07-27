@@ -97,7 +97,7 @@ gate exists to make, and the last thing to cheapen.
 **The reviewer runs as `kando-reviewer`, a tool-restricted agent** that `kando-mcp init`
 installs into `.claude/agents/`. It has no board tools and no edit tools, so it *cannot*
 move a ticket or push — the independence the review gate depends on is enforced by its
-toolset rather than by asking nicely. It also skips loading 33 Kando tool schemas it
+toolset rather than by asking nicely. It also skips loading all 21 Kando tool schemas it
 would never call.
 
 **If that agent type is unavailable** (an older `init`, or a repo where the file was not
