@@ -65,7 +65,9 @@ Boards are addressed by **key** (e.g. `TSK`); tickets by **`KEY-N`** (e.g. `TSK-
 
 `init` installs the `kando`, `kando-refine`, and `kando-autonomous-loop` skills plus the `/kando-loop` and `/kando-refine` commands. See each skill for details; `/kando-loop` autonomously works tickets to completion and `/kando-refine` turns a ticket into a spec interactively.
 
-`/kando-loop` verifies each pushed change with **commands it composes by reading your repo** — GitHub Actions, GitLab CI, a `Makefile` target, or just your test suite. There is no CI configuration to write.
+`/kando-loop` works tickets **one at a time** but ships them **in batches**. Each ticket is implemented test-first, reviewed by an independent agent, and parked on a per-run `kando-loop/*` branch under a `pending-ship` tag. When a batch is worth deploying — normally a completed story, always before the run exits — the loop merges it to `main` and runs your full verification **once for the batch**. A story with ten subtasks therefore costs one deploy and one suite run, not ten. Only then do its tickets reach the last column. If a batch goes red, the loop fixes forward twice under the same review gate, and reverts the merge if that fails.
+
+It verifies each shipped batch with **commands it composes by reading your repo** — GitHub Actions, GitLab CI, a `Makefile` target, or just your test suite. There is no CI configuration to write.
 
 A background waiter (`.claude/hooks/kando-verify-wait.mjs`) runs them and reports the verdict through exit codes. It takes a **watch** (blocks until the outcome is known — the fast path) and/or a **probe** (polled status query — the safety net), and needs at least one. With both, whichever answers first wins, so a watch that hangs or dies can never strand the loop. A repo with no CI just gets a watch: its test suite runs to completion, however long it takes.
 

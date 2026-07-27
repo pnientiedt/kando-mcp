@@ -7,6 +7,11 @@ description: Use when asked to autonomously work one or more Kando targets — b
 
 Work one or more Kando **targets** (board keys and/or `KEY-N` stories/subtasks) autonomously: a **coordinator loop** dispatches a **fresh worker subagent per ticket**, gates each ticket behind TDD and an **independent review**, and continues until nothing workable remains — across every target given, in order. Running `/kando-loop` authorizes spawning worker + reviewer subagents for this task.
 
+**Work is ticket-at-a-time; shipping is batch-at-a-time.** Tickets accumulate on one
+`kando-loop/<run-id>` branch, and the coordinator merges to `main` and runs the repo's
+full verification once per **batch** — normally a completed story. A story with ten
+subtasks costs one deploy and one full suite run, not ten. See "Batching and the flush".
+
 **REQUIRED BACKGROUND:** the `kando` skill (the record-then-code gate) and the `test-driven-development` skill. Every worker follows both.
 
 ## Coordinator loop
@@ -34,6 +39,22 @@ Illustrations, **not a menu** — a Buildkite or Jenkins repo gets commands you 
 
 If you can compose neither, skip the wait entirely and fall back to the green-local-build gate described in the worker prompt.
 
+**These commands are armed once per FLUSH, not once per ticket.** Tickets are worked one
+at a time and **shipped in batches** — see "Batching and the flush". That is the whole
+point of this design: a story with ten subtasks costs one deploy and one full suite run,
+not ten.
+
+**Before the first ticket, cut the run's loop branch.** Every ticket lands there; only
+you ever touch `main`.
+
+- A **dirty working tree is a hard stop.** Refuse to start rather than sweep somebody's
+  uncommitted work into a batch you are going to ship to production.
+- Bring `main` up to date (`git checkout main && git pull --ff-only`), then
+  `git checkout -b kando-loop/<run-id>`, where `<run-id>` is a `YYYYMMDD-HHMMSS`
+  timestamp.
+- **One branch serves the whole run**, including a multi-target run spanning several
+  boards. After each green flush it is fast-forwarded to `main` and reused.
+
 **On each board's first ticket, call `get_board` once — then never again for that
 board.** Pass **`fields: ["board", "members"]`**: you need the columns and the bot's
 `userSub`, not every ticket, tag, and release on the board. The worker does not call it. Cache three things per board: the bot member's
@@ -43,40 +64,131 @@ run** — a multi-target run can span several boards.
 Restate the cache as a compact run header at the top of **every** turn:
 
 ```
+branch kando-loop/20260727-153000 | batch TSK-11, TSK-12
 board TSK → userSub abc-123, in-progress "In Progress", last "Done"
 ```
 
-You end your turn during the step-5 verification wait and are re-invoked by heartbeats,
-so a cache held only in context does not survive. If the header is missing when you
-resume, re-fetch `get_board` for the board you are on. Worst case that costs one fetch
-per interruption — still far below one per worker.
+You end your turn during the flush verification wait and are re-invoked by heartbeats,
+so anything held only in context does not survive. If the header is missing when you
+resume, rebuild it: `get_board` for the board you are on, `git branch --show-current`
+for the branch, and the **`pending-ship` tickets on the board** for the batch — which is
+exactly why the hold is a tag and not a list in your head. Worst case that costs one
+fetch per interruption — still far below one per worker.
 
 **For each `target` in the list, in order, repeat until it is exhausted:**
 
-1. Call `next_task(target)`. If it returns `{ "none": true }` → this target is **exhausted**: go to the **next target** (or, if it was the last, **stop — success**).
+1. Call `next_task(target)` — **unless step 7 already did**, in which case use the result it hands you. If it returns `{ "none": true }` → this target is **exhausted**: go to the **next target** (or, if it was the last, **flush what is on the branch, then stop — success**).
 2. Enforce safety BEFORE dispatching (cumulative across all targets):
-   - If `done + human-needed ≥ 25` → **stop (max-tasks)**.
-   - If the last **3** results in a row were `human-needed` → **stop (circuit breaker)**.
-3. Record the ticket's **base sha** (`git rev-parse HEAD`) — one line of output, and the reviewer's diff range for every round of this ticket. Then dispatch ONE worker subagent (Agent tool, **`subagent_type: kando-worker`**, **`model: sonnet`**, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`, substituting this board's cached `<userSub>`, `<in-progress column>`, and `<last column>` into it. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
+   - If `done + human-needed ≥ 25` → **flush, then stop (max-tasks)**.
+   - If the last **3** results in a row were `human-needed` → **flush, then stop (circuit breaker)**.
+3. Record the ticket's **base sha** (`git rev-parse HEAD`, on the loop branch) — one line of output, and the reviewer's diff range for every round of this ticket. Then dispatch ONE worker subagent (Agent tool, **`subagent_type: kando-worker`**, **`model: sonnet`**, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`, substituting this board's cached `<userSub>`, `<in-progress column>`, and `<last column>` into it. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
 4. **Independent review inner loop** (max **3** rounds) — while the worker reports `ready-for-review`:
    a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, **`subagent_type: kando-reviewer`**, **`model: sonnet`**, **`run_in_background: false`**) with the **reviewer prompt** below, giving it the ticket intent and the **diff range** `<base-sha>..HEAD`. **Never run `git diff` yourself and never paste a diff into the prompt** — that pays for it twice, once in your context and once in the reviewer's, and you never read it. The reviewer runs the diff itself. Every round uses the SAME base sha, so each fresh reviewer sees the complete ticket diff, not just the latest fix. It returns a BLOCKING list and an ADVISORY list.
-   b. **No blocking findings** → SendMessage the worker: `review passed — ship it`. Go to step 5.
+   b. **No blocking findings** → SendMessage the worker: `review passed — push the branch`. Go to step 5.
    c. **Blocking findings** → SendMessage the worker the findings. It fixes, recommits, and reports `ready-for-review` again. `round++`.
    d. If `round > 3` and still blocking → SendMessage the worker: `block it: <findings>`. It tags `human-needed` + writes a Blocked note; treat the result as `blocked`.
    - Advisory findings never block and never trigger a round; the worker may apply low-risk ones or note them in the Done section.
-5. **When the worker reports `pushed`** (with its commit sha), arm the waiter and **end your turn**:
-   - `Monitor` with `persistent: true`, command `node .claude/hooks/kando-verify-wait.mjs` with whichever of `--watch '<cmd>'` / `--probe '<cmd>'` you composed (at least one, both when both exist), substituting the worker's sha and — for a `gh run watch`-style watch — the run id you looked up from that sha.
-   - Each heartbeat re-invokes you. While the status is `pending`, do nothing but stay visible — there is no deadline, by design.
-   - Waiter exits **0** → SendMessage the worker `verified green, finish up`. It moves the ticket to the last column, records the deep link, and reports `done`.
-   - Waiter exits **1** → **stop the whole loop** — a red pipeline is an infra failure. Surface the output.
-   - Waiter exits **3** → **stop the whole loop**. Either the probe is malformed, or a watch went unavailable with no probe to fall back on. Neither fixes itself by being retried. Report the exit code and the commands. **Never treat this as green.**
-   - Neither command was composable for this repo → skip the wait; the worker's green local build is the gate.
+5. **When the worker reports `pushed`** (its commit is on `kando-loop/<run-id>`), put the ticket into the **hold state**. **There is no pipeline wait here** — that is what changed:
+   - `ensure_tag <board> pending-ship`, then `update_ticket KEY-N` to apply it, **keeping every tag the ticket already has**. Leave it in the in-progress column: it is not Done until it ships.
+   - Add `KEY-N` to this run's **batch list** and restate that list in your run header.
+   - The **tag**, not the list, is the durable record. `next_task` skips a `pending-ship` ticket — the only reason the loop can advance past its own finished work — and if this session dies, the board still shows exactly what is parked on the branch.
 6. Read the worker's final report and **verify** it via `get_ticket`:
-   - `done` → the ticket MUST be in the last column, carry the `claude` tag, and have a deep link in its `## 🤖 Claude — Done` section. You already observed the verification go green in step 5, so re-check the ticket state via `get_ticket` — do not re-derive the pipeline status.
+   - `pushed` → the ticket MUST carry `claude` + `pending-ship`, sit in the in-progress column, and have `## 🤖 Claude — Plan` and `## 🤖 Claude — Done` sections. It is **not** Done — you set that at the flush.
    - `blocked` → the ticket MUST carry `claude` + `human-needed`. Count it toward the circuit breaker.
-7. Loop back to step 1 for the **same target**.
+7. **Decide whether to flush**, then loop back to step 1 for the **same target**. Call `next_task(target)` here and carry its result into step 1 — one call, used for both:
+   - Its `storyId` **differs** from the ticket you just finished, or it returned `{ "none": true }` → **that story is complete. Flush now**, then continue.
+   - **Same `storyId`** → the story has more subtasks. Keep working. Do **not** flush per subtask; that is the entire point of this design.
+   - You may **also** flush on judgement, when what has accumulated reads as a coherent unit somebody would actually deploy. Standing bias: a chore, a flaky-test fix, a docs or config change never earns a deploy of its own.
+   - `next_task` returns `storyId` only for **subtasks**. A run of standalone stories has no story boundary to detect, so it leans on your judgement plus the exit flush.
 
-Final summary: cumulative counts of done / human-needed / skipped, the stop reason, and — if a limit tripped mid-run — which target it stopped on.
+Final summary: cumulative counts of done / human-needed / skipped, the stop reason, and — if a limit tripped mid-run — which target it stopped on. Also report the **loop branch name**, the **batches shipped** (merge sha per batch), and any tickets left `pending-ship`.
+
+## Batching and the flush
+
+A **flush** is the only thing that ships: merge the loop branch into `main`, push,
+deploy, and run the repo's full verification once for the whole batch. **You** do this —
+never a worker. Three things trigger one:
+
+- **a story completes** — step 7's `storyId` comparison, or `{ "none": true }`;
+- **your judgement** — the accumulated work reads as a coherent, deployable unit;
+- **the run is about to exit** — for *any* reason: target exhausted, max-tasks, circuit
+  breaker. Nothing is ever left silently unshipped. (The one exception is a red flush
+  that exhausted its fixers: it has already reverted, and there is nothing to ship.)
+
+**The loop BLOCKS on a flush.** No ticket starts until the verdict lands.
+
+### The procedure
+
+**An empty batch is not a flush.** If the batch list is empty — every stop path calls for
+a flush, and step 7 has usually just done one — there is nothing to merge. Skip it
+silently; do not construct an empty merge commit.
+
+1. **Merge and push.** `git checkout main && git pull --ff-only`, then
+   `git merge --no-ff kando-loop/<run-id>` with a message naming **every ticket in the
+   batch**, then `git push origin main`. Record the **merge sha**.
+2. **Arm the waiter against the merge sha** and **end your turn** — the mechanism is
+   exactly the one this loop has always used, only far less often:
+   - `Monitor` with `persistent: true`, command `node .claude/hooks/kando-verify-wait.mjs`
+     with whichever of `--watch '<cmd>'` / `--probe '<cmd>'` you composed at run start
+     (at least one, both when both exist), substituting the **merge sha** and — for a
+     `gh run watch`-style watch — the run id you looked up from it.
+   - Each heartbeat re-invokes you. While the status is `pending`, do nothing but stay
+     visible — there is no deadline, by design.
+3. **Waiter exits `0` (green) — the batch has shipped.** For **each** ticket in the
+   batch, you do the board writes yourself:
+   - `update_ticket` to **remove `pending-ship`** (keep `claude` and everything else);
+   - `move_ticket` to the **last column**;
+   - write the **deep link** — the `main` commit URL, plus the pipeline run URL — into
+     its `## 🤖 Claude — Done` section.
+
+   Then `git checkout kando-loop/<run-id> && git merge --ff-only main` to carry the
+   branch forward, clear the batch list, and continue.
+
+   *You* do these writes because the batch's workers finished their turns long ago, and
+   you already hold `update_ticket` and `move_ticket`. Do not try to resurrect them.
+4. **Waiter exits `1` (red)** → see "When a flush goes red" below.
+5. **Waiter exits `3`** → **stop the whole loop**. Either the probe is malformed, or a
+   watch went unavailable with no probe to fall back on. Neither fixes itself by being
+   retried. Report the exit code and the commands. **Never treat this as green.**
+6. **Neither command was composable for this repo** → skip step 2 entirely: the merge
+   lands, do the step-3 board writes immediately, and the gate is the workers' green
+   local builds.
+
+### When a flush goes red
+
+`main` and production are **broken**. Say so **prominently** in your output — not buried
+in a status line. Then fix forward, twice at most:
+
+1. **`git checkout kando-loop/<run-id>` first.** The merge left your working tree on
+   `main`, and the fixer must not work there. Then dispatch a **`kando-worker`**
+   (`subagent_type: kando-worker`, `model: sonnet`, `run_in_background: false`) on a
+   **synthetic brief** — create **no** board ticket. Give it: the failing run's output
+   and URL, the merge sha, the batch's ticket keys, and the diff range to read. Tell it
+   it is on the loop branch, which already holds the whole batch (`main` differs only by
+   the merge commit); that it must keep TDD wherever the failure has a testable surface;
+   and that it commits, pushes the branch, and reports `ready-for-review`.
+2. Dispatch a **fresh `kando-reviewer`** on the fixer's own diff range — same inner loop,
+   same **3**-round cap. A fixer that papers over a real bug is exactly what this gate
+   exists to catch.
+3. Review passes → **re-flush** from step 1 of the procedure.
+
+**Bounded at 2 fixer attempts per red flush**, and the count **resets on green**. On
+exhaustion:
+
+- `git revert -m 1 <merge-sha>` and push — `main` and production return to the last
+  green state. The loop branch keeps every commit, so nothing is lost, only unshipped.
+- Write a `## 🤖 Claude — Blocked` section on **every** ticket in the batch, naming the
+  red run and what both fixers tried.
+- **Stop the loop**, reporting the merge sha, the run URL, the revert sha, the batch's
+  tickets, and both fixer attempts.
+
+Fixer attempts count toward **none** of the budgets — not `done`/`human-needed`, not the
+circuit breaker, not max-tasks. A fix is not a ticket; it has its own bound.
+
+**This leaves a deliberate manual-recovery point.** The batch's tickets keep
+`pending-ship`, so no later run will re-select them. That is correct: their code is
+written and reviewed, and re-working it is not the recovery. A human reads the Blocked
+notes and decides. The loop does not dig itself out.
 
 ## Model tiering — deliberate, not an oversight
 
@@ -129,13 +241,12 @@ Dispatch a general-purpose subagent with this instruction (substitute the real `
 > 2. `get_ticket KEY-N`. Assign the ticket to `<userSub>`, move it to the `<in-progress column>` column, and append a `## 🤖 Claude — Plan` section (preserve the original body). **Do NOT call `get_board`** — the coordinator has already given you every board value you need. **If the body has a `## 📋 Specification` section, that is the authoritative spec — build to it (do not re-derive intent from the title).**
 > 3. **TDD — write failing test(s) FIRST (RED).** Before any implementation, add test(s) covering the ticket's intended behavior using the repo's **existing** test suites/frameworks (match their patterns; do not invent a parallel harness). Run them and confirm they **fail for the right reason**. If a `## 📋 Specification` section exists, write these tests against its **Acceptance criteria**. *Exemption:* only if the change has genuinely no testable runtime surface (pure docs/config) — state that and why in the Plan section; the reviewer will verify it.
 > 4. **Implement to green (GREEN).** Minimal code to make those tests pass; then run the full suite (and build, if any) and confirm it is green.
-> 5. **Commit LOCALLY — do NOT push.** Append a `## 🤖 Claude — Done` section. `git commit`. Then **report `ready-for-review`** and STOP — do not push. The coordinator will have an independent reviewer look at your diff.
+> 5. **Commit LOCALLY — do NOT push.** You are on the run's `kando-loop/<run-id>` branch; stay on it and never switch. Append a `## 🤖 Claude — Done` section. `git commit`. Then **report `ready-for-review`** and STOP — do not push. The coordinator will have an independent reviewer look at your diff.
 > 6. **When the coordinator sends review findings:** fix every BLOCKING one, keep the suite green, `git commit`, and report `ready-for-review` again. (Apply low-risk ADVISORY suggestions too, or note them in the Done section.)
-> 7. **When the coordinator says `review passed — ship it`:** land the change on **`main`** — if you worked on a branch, merge it with `git merge --no-ff` (or commit directly on `main`), then **push `main`**. Running `/kando-loop` authorizes this — it is a standing pre-authorization to deploy; do NOT stop to ask, and do NOT leave the work on a branch or an open PR. Then report **`pushed`** with the commit sha and STOP. **Do not watch any pipeline yourself** — the coordinator owns that wait. (If the repo has no verification pipeline, the coordinator will tell you to finish immediately on your green local build.)
-> 8. **When the coordinator says `verified green, finish up`:** move the ticket to the `<last column>` column, record a **deep link** (the `main` commit URL, plus the pipeline run URL if there is one) in the Done section, and report **`done`**.
-> 9. **When the coordinator says `block it`:** `ensure_tag <board> human-needed`, apply it (keep `claude`), append a `## 🤖 Claude — Blocked` section with the outstanding findings and what you tried, leave the ticket un-shipped, report **`blocked`**.
+> 7. **When the coordinator says `review passed — push the branch`:** push the run's loop branch `kando-loop/<run-id>` — the branch you are already on. **Never push `main`, never merge into `main`, and never open a PR.** Running `/kando-loop` authorizes this push; do NOT stop to ask. Then report **`pushed`** with the commit sha and STOP. The coordinator decides when your ticket's batch ships and owns every pipeline wait: **do not watch a pipeline, and do not move the ticket to the last column** — it is not Done until the batch is verified green on `main`, and the coordinator records that itself.
+> 8. **When the coordinator says `block it`:** `ensure_tag <board> human-needed`, apply it (keep `claude`), append a `## 🤖 Claude — Blocked` section with the outstanding findings and what you tried, leave the ticket un-shipped, report **`blocked`**.
 > **Run long commands in the FOREGROUND — never `run_in_background`.** Test suite, build, install, e2e run: sit through it. You are a subagent, so ending your turn is *terminal*, and a background job's completion notification is delivered to the **coordinator**, not to you — park yourself waiting for one and you stop before committing, stranding the work. If a command would outlast the foreground timeout, narrow it (one suite, one spec) and say so; do not background it. The "never block in your own foreground" rule elsewhere in this skill is addressed to the coordinator and does **not** apply to you.
-> Report exactly one word each turn — `ready-for-review`, `pushed`, `done`, or `blocked` — with a one-line reason. Never push before the coordinator says the review passed.
+> Report exactly one word each turn — `ready-for-review`, `pushed`, or `blocked` — with a one-line reason. There is no `done` for you to report: only the coordinator can mark a ticket Done, and only after its batch is green on `main`. Never push before the coordinator says the review passed.
 
 ## Reviewer prompt (independent — never the implementer)
 
@@ -166,14 +277,18 @@ Dispatch a FRESH general-purpose subagent (it did NOT write this code) with:
 **No wait in this loop may depend on a single notification that might not arrive.** That is the failure mode this design exists to remove.
 
 - Short waits — worker dispatch, reviewer dispatch, review round-trips — are **synchronous** (`run_in_background: false`). The coordinator is strictly sequential and needs each result before continuing, so backgrounding them buys nothing and makes a lost notification fatal.
-- The one genuinely long wait — verification after a push — is a **heartbeat stream** via `Monitor`, never a blocking call *of yours*. **Never run a pipeline watch (`gh run watch` or any equivalent) in your own foreground:** it blocks with no heartbeat, and a foreground command is capped at 10 minutes anyway — that combination is the original hang this design removed. A blocking watch is fine *inside* the waiter, where it is raced against the poll and the waiter is the thing emitting heartbeats. The rule is about who blocks, not about blocking.
+- The one genuinely long wait — **verification after a flush** — is a **heartbeat stream** via `Monitor`, never a blocking call *of yours*. **Never run a pipeline watch (`gh run watch` or any equivalent) in your own foreground:** it blocks with no heartbeat, and a foreground command is capped at 10 minutes anyway — that combination is the original hang this design removed. A blocking watch is fine *inside* the waiter, where it is raced against the poll and the waiter is the thing emitting heartbeats. The rule is about who blocks, not about blocking.
 - A wait that produces no output is indistinguishable from a wait that died. If you are waiting, something must be emitting.
 - **A permission prompt is a silent wait too.** `kando-mcp init` pre-grants the board tools this loop calls, so an unattended run never blocks on one. If a dispatch reports a missing permission, the repo was installed by an older `init` — re-run it rather than sitting there. The destructive tools are deliberately *not* pre-granted, and the `kando-worker` agent withholds them independently.
 
 ## Never
 
-- **Never report `done` before the change is pushed to `main` AND the verification probe has gone green.** A pushed branch, an open PR, or a green branch-CI run is NOT done.
-- Never stop the loop to ask for deploy authorization — `/kando-loop` is the standing authorization to land tickets on `main` and deploy.
+- **Never mark a ticket `done` before its batch's merge commit is on `main` AND the verification has gone green.** A ticket sitting on the loop branch under `pending-ship` is NOT done, however finished and well-reviewed it is. Only **you** set `done`, and only at step 3 of a green flush.
+- **Never let a worker push `main`.** Workers push `kando-loop/<run-id>` and nothing else; the merge is yours alone.
+- **Never exit the run with work left on the branch.** Every stop path flushes first — the sole exception being a red flush that exhausted its fixers and already reverted.
+- **Never flush per subtask.** A story ships as one deploy; a chore, a flaky-test fix or a docs change does not earn a deploy of its own.
+- Never stop the loop to ask for deploy authorization — `/kando-loop` is the standing authorization to push the loop branch, merge it to `main`, and deploy.
 - Never push before the independent review passes. The reviewer is NEVER the implementer — always a fresh, separate agent.
 - Never skip TDD when the change is testable; never accept a false "no testable surface" exemption.
-- Never push a red build. Never mark `done` on a red or malformed verification. Never work a ticket assigned to a human. Never continue the loop after a red pipeline. Never lower the `human-needed` bar to skip hard work.
+- Never push a red build. Never mark `done` on a red or malformed verification. Never work a ticket assigned to a human. Never lower the `human-needed` bar to skip hard work.
+- **Never start a NEW ticket while a flush is red.** The only thing that may follow a red flush is a bounded fixer — two at most — and then a revert and a stop.
