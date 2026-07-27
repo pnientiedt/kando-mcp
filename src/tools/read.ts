@@ -31,6 +31,25 @@ export async function resolveBoardId(gql: Gql, board: string): Promise<string> {
   return match.id;
 }
 
+export type BoardField = 'board' | 'items' | 'tags' | 'releases' | 'members';
+
+/**
+ * Narrow a get_board payload to the requested sections. An absent or empty list means
+ * every section — callers that pass nothing must keep seeing the whole board, and an
+ * empty array is far more likely to be a caller bug than a request for nothing.
+ */
+export function selectBoardFields<T extends Record<string, unknown>>(
+  payload: T,
+  fields?: BoardField[],
+): Partial<T> {
+  if (!fields || fields.length === 0) return payload;
+  const out: Partial<T> = {};
+  for (const f of fields) {
+    if (f in payload) out[f as keyof T] = payload[f as keyof T];
+  }
+  return out;
+}
+
 export function registerReadTools(server: ToolHost, gql: Gql) {
   server.registerTool(
     'list_boards',
@@ -52,13 +71,19 @@ export function registerReadTools(server: ToolHost, gql: Gql) {
     'get_board',
     {
       description: 'Get a board with its columns, non-archived tickets, tags, releases and members.',
-      inputSchema: { board: z.string().describe('board key (e.g. TSK) or id') },
+      inputSchema: {
+        board: z.string().describe('board key (e.g. TSK) or id'),
+        fields: z
+          .array(z.enum(['board', 'items', 'tags', 'releases', 'members']))
+          .optional()
+          .describe('sections to return; omit for all. Use ["board","members"] for just columns + userSubs.'),
+      },
     },
-    async ({ board }) => {
+    async ({ board, fields }) => {
       const boardId = await resolveBoardId(gql, board);
       const data = await gql(GET_BOARD, { boardId });
       const bc = data.getBoard;
-      return toolText({
+      return toolText(selectBoardFields({
         board: {
           id: bc.board.id,
           key: bc.board.key,
@@ -75,7 +100,7 @@ export function registerReadTools(server: ToolHost, gql: Gql) {
           displayName: m.displayName,
           role: m.role,
         })),
-      });
+      }, fields));
     },
   );
 

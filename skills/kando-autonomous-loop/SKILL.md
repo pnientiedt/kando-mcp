@@ -35,7 +35,8 @@ Illustrations, **not a menu** — a Buildkite or Jenkins repo gets commands you 
 If you can compose neither, skip the wait entirely and fall back to the green-local-build gate described in the worker prompt.
 
 **On each board's first ticket, call `get_board` once — then never again for that
-board.** The worker does not call it. Cache three things per board: the bot member's
+board.** Pass **`fields: ["board", "members"]`**: you need the columns and the bot's
+`userSub`, not every ticket, tag, and release on the board. The worker does not call it. Cache three things per board: the bot member's
 `userSub`, the in-progress column, and the last column. Key this **per board, not per
 run** — a multi-target run can span several boards.
 
