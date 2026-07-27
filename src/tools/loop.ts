@@ -143,7 +143,9 @@ export function registerLoopTools(server: ToolHost, gql: Gql, botEmail: string) 
   server.registerTool(
     'ensure_tag',
     {
-      description: "Return a board tag's id by name, creating it (fixed colors) if it doesn't exist yet.",
+      description:
+        "Ensure a board tag exists by name, creating it (fixed colors) if it doesn't exist yet. " +
+        'Apply tags to tickets by NAME with update_ticket.',
       inputSchema: { board: z.string(), name: z.string() },
     },
     async ({ board, name }) => {
@@ -152,11 +154,10 @@ export function registerLoopTools(server: ToolHost, gql: Gql, botEmail: string) 
       const existing = (data.getBoard.tags ?? []).find(
         (t: any) => (t.name ?? '').toLowerCase() === name.toLowerCase(),
       );
-      if (existing) return toolText({ id: existing.id, name: existing.name, created: false });
+      if (existing) return toolText({ tag: existing.name, created: false });
       const { colorBg, colorText } = pickTagColors(name);
       const d = await gql(CREATE_TAG, { boardId, name, colorBg, colorText });
-      const tag = d.createTag.tag;
-      return toolText({ id: tag.id, name: tag.name, created: true });
+      return toolText({ tag: d.createTag.tag.name, created: true });
     },
   );
 
