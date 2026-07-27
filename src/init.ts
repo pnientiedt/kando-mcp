@@ -26,11 +26,12 @@ export function ensureLoopAuthorization(text: string): string {
   return (base ? base + '\n\n' : '') + LOOP_AUTH_BLOCK + '\n';
 }
 
-/** Destination repo-relative paths for a set of skill + command source files (used in tests). */
-export function relTargets(skillFiles: string[], commandFiles: string[]) {
+/** Destination repo-relative paths for a set of skill + command + agent source files (used in tests). */
+export function relTargets(skillFiles: string[], commandFiles: string[], agentFiles: string[] = []) {
   return {
     skills: skillFiles.map((f) => `.claude/skills/${f}`),
     commands: commandFiles.map((f) => `.claude/commands/${f}`),
+    agents: agentFiles.map((f) => `.claude/agents/${f}`),
   };
 }
 
@@ -133,7 +134,7 @@ function readText(p: string): string {
 
 /**
  * Wire the Kando MCP into a target repo (cross-platform, pure Node):
- * `.mcp.json` → `npx kando-mcp serve`, skills/commands into `.claude/`, the Node
+ * `.mcp.json` → `npx kando-mcp serve`, skills/commands/agents into `.claude/`, the Node
  * workflow hook, settings approval + hook registration, CLAUDE.md loop-auth, and
  * `.gitignore` for the personal settings file. `init` also runs legacy cleanup
  * (see cleanupLegacy in this module).
@@ -147,9 +148,10 @@ export function init(targetDir: string): void {
   const mcpJsonPath = join(target, '.mcp.json');
   writeFileSync(mcpJsonPath, JSON.stringify(mergeMcpJson(readJson(mcpJsonPath), mcpServerEntry()), null, 2) + '\n');
 
-  // 2) skills + commands (shipped in the package)
+  // 2) skills + commands + agents (shipped in the package)
   copyTree(join(pkgRoot, '..', 'skills'), join(target, '.claude', 'skills'));
   copyTree(join(pkgRoot, '..', 'commands'), join(target, '.claude', 'commands'));
+  copyTree(join(pkgRoot, '..', 'agents'), join(target, '.claude', 'agents'));
 
   // 3) Node workflow hook (shipped asset), invoked via `node`
   const hooksDir = join(target, '.claude', 'hooks');

@@ -58,7 +58,7 @@ per interruption — still far below one per worker.
    - If the last **3** results in a row were `human-needed` → **stop (circuit breaker)**.
 3. Record the ticket's **base sha** (`git rev-parse HEAD`) — one line of output, and the reviewer's diff range for every round of this ticket. Then dispatch ONE worker subagent (Agent tool, general-purpose, **`model: sonnet`**, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`, substituting this board's cached `<userSub>`, `<in-progress column>`, and `<last column>` into it. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
 4. **Independent review inner loop** (max **3** rounds) — while the worker reports `ready-for-review`:
-   a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, general-purpose, **`model: sonnet`**, **`run_in_background: false`**) with the **reviewer prompt** below, giving it the ticket intent and the **diff range** `<base-sha>..HEAD`. **Never run `git diff` yourself and never paste a diff into the prompt** — that pays for it twice, once in your context and once in the reviewer's, and you never read it. The reviewer runs the diff itself. Every round uses the SAME base sha, so each fresh reviewer sees the complete ticket diff, not just the latest fix. It returns a BLOCKING list and an ADVISORY list.
+   a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, **`subagent_type: kando-reviewer`**, **`model: sonnet`**, **`run_in_background: false`**) with the **reviewer prompt** below, giving it the ticket intent and the **diff range** `<base-sha>..HEAD`. **Never run `git diff` yourself and never paste a diff into the prompt** — that pays for it twice, once in your context and once in the reviewer's, and you never read it. The reviewer runs the diff itself. Every round uses the SAME base sha, so each fresh reviewer sees the complete ticket diff, not just the latest fix. It returns a BLOCKING list and an ADVISORY list.
    b. **No blocking findings** → SendMessage the worker: `review passed — ship it`. Go to step 5.
    c. **Blocking findings** → SendMessage the worker the findings. It fixes, recommits, and reports `ready-for-review` again. `round++`.
    d. If `round > 3` and still blocking → SendMessage the worker: `block it: <findings>`. It tags `human-needed` + writes a Blocked note; treat the result as `blocked`.
@@ -92,6 +92,16 @@ expensive and rare enough not to matter to cost.
 **Never drop the reviewer to `haiku`.** Its hardest task is judging whether tests are
 trivial, gamed, or clearly not written test-first — the exact discrimination the review
 gate exists to make, and the last thing to cheapen.
+
+**The reviewer runs as `kando-reviewer`, a tool-restricted agent** that `kando-mcp init`
+installs into `.claude/agents/`. It has no board tools and no edit tools, so it *cannot*
+move a ticket or push — the independence the review gate depends on is enforced by its
+toolset rather than by asking nicely. It also skips loading 33 Kando tool schemas it
+would never call.
+
+**If that agent type is unavailable** (an older `init`, or a repo where the file was not
+installed), fall back to `general-purpose` and carry on — the review still works, it just
+costs more and leans on the prompt for independence.
 
 ## Worker prompt (one ticket; hands back to the coordinator at the review gate)
 

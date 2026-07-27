@@ -51,6 +51,13 @@ describe('relTargets', () => {
     expect(out.skills).toEqual(['.claude/skills/kando/SKILL.md']);
     expect(out.commands).toEqual(['.claude/commands/kando-loop.md']);
   });
+  it('lists agent destination paths', () => {
+    const out = relTargets(['kando/SKILL.md'], ['kando-loop.md'], ['kando-reviewer.md']);
+    expect(out.agents).toEqual(['.claude/agents/kando-reviewer.md']);
+  });
+  it('defaults agents to empty when none are given', () => {
+    expect(relTargets(['kando/SKILL.md'], ['kando-loop.md']).agents).toEqual([]);
+  });
 });
 
 describe('mergeMcpJson', () => {
@@ -130,6 +137,7 @@ describe('init (integration)', () => {
     expect(mcp.mcpServers.kando).toEqual(mcpServerEntry());
 
     expect(existsSync(join(dir, '.claude', 'skills', 'kando', 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(dir, '.claude', 'agents', 'kando-reviewer.md'))).toBe(true);
     expect(existsSync(join(dir, '.claude', 'commands', 'kando-loop.md'))).toBe(true);
     expect(existsSync(join(dir, '.claude', 'hooks', 'kando-workflow.mjs'))).toBe(true);
     expect(existsSync(join(dir, '.claude', 'hooks', 'kando-verify-wait.mjs'))).toBe(true);
