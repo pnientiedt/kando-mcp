@@ -73,13 +73,16 @@ export function registerReadTools(server: ToolHost, gql: Gql, botEmail: string |
   server.registerTool(
     'get_board',
     {
-      description: 'Get a board with its columns, non-archived tickets, tags, releases and members.',
+      description:
+        'Get a board: columns, non-archived tickets, tags, releases and members. ' +
+        'Tickets come back as identifiers only (KEY-N, title, column, tags, assignee) — ' +
+        "NO bodies. Use get_ticket for a ticket's description or spec.",
       inputSchema: {
         board: z.string().describe('board key (e.g. TSK) or id'),
         fields: z
           .array(z.enum(['board', 'items', 'tags', 'releases', 'members']))
           .optional()
-          .describe('sections to return; omit for all. Use ["board","members"] for just columns + userSubs.'),
+          .describe('sections to return; omit for all. Use ["board"] for just the column names.'),
       },
     },
     async ({ board, fields }) => {
@@ -112,7 +115,9 @@ export function registerReadTools(server: ToolHost, gql: Gql, botEmail: string |
   server.registerTool(
     'get_ticket',
     {
-      description: 'Get full detail for one ticket by KEY-N.',
+      description:
+        'Get full detail for one ticket by KEY-N, INCLUDING its body — the only tool that ' +
+        "returns one. A container story also lists its subtasks, without their bodies.",
       inputSchema: { ticket: z.string().describe('ticket id, e.g. TSK-42') },
     },
     async ({ ticket }) => {
@@ -150,13 +155,15 @@ export function registerReadTools(server: ToolHost, gql: Gql, botEmail: string |
   server.registerTool(
     'search_tickets',
     {
-      description: "Search a board's non-archived tickets. Filters combine with AND.",
+      description:
+        "Search a board's non-archived tickets. Filters combine with AND. Returns " +
+        'identifiers only — use get_ticket for a body (text still searches bodies).',
       inputSchema: {
         board: z.string().describe('board key or id'),
         column: z.string().optional().describe('column label or id'),
-        assignee: z.string().optional().describe('member userSub'),
-        tag: z.string().optional().describe('tag id'),
-        release: z.string().optional().describe('release id'),
+        assignee: z.string().optional().describe('member email, userSub, or "me"'),
+        tag: z.string().optional().describe('tag name or id'),
+        release: z.string().optional().describe('release name or id'),
         text: z.string().optional().describe('matches title + description'),
       },
     },

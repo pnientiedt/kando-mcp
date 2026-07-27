@@ -135,11 +135,11 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
       inputSchema: {
         board: z.string(),
         title: z.string(),
-        column: z.string().optional().describe('column id; defaults to the first column'),
+        column: z.string().optional().describe('column label or id; defaults to the first column'),
         body: z.string().optional(),
-        tags: z.array(z.string()).optional(),
-        assignee: z.string().optional(),
-        releaseId: z.string().optional(),
+        tags: z.array(z.string()).optional().describe('tag NAMES (or ids); create unknown tags with ensure_tag first'),
+        assignee: z.string().optional().describe('member email, userSub, or "me"'),
+        releaseId: z.string().optional().describe('release name or id'),
         estimateHours: z.number().optional(),
         visibleAt: z.string().optional(),
         position: positionShape,
@@ -166,11 +166,11 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
       inputSchema: {
         parent: z.string().describe('parent ticket KEY-N'),
         title: z.string(),
-        column: z.string().optional(),
+        column: z.string().optional().describe('column label or id; defaults to the first column'),
         body: z.string().optional(),
-        tags: z.array(z.string()).optional(),
-        assignee: z.string().optional(),
-        releaseId: z.string().optional(),
+        tags: z.array(z.string()).optional().describe('tag NAMES (or ids); create unknown tags with ensure_tag first'),
+        assignee: z.string().optional().describe('member email, userSub, or "me"'),
+        releaseId: z.string().optional().describe('release name or id'),
         estimateHours: z.number().optional(),
         excludedFromRelease: z.boolean().optional(),
         visibleAt: z.string().optional(),
@@ -199,13 +199,13 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
   const patchShape = {
     title: z.string().optional(),
     body: z.string().optional(),
-    tags: z.array(z.string()).optional(),
-    assignee: z.string().optional().describe("member userSub; '' to unassign"),
-    releaseId: z.string().optional().describe("release id; '' to clear"),
+    tags: z.array(z.string()).optional().describe('tag NAMES (or ids); create unknown tags with ensure_tag first'),
+    assignee: z.string().optional().describe("member email, userSub, or \"me\"; '' to unassign"),
+    releaseId: z.string().optional().describe("release name or id; '' to clear"),
     estimateHours: z.number().optional(),
     visibleAt: z.string().optional().describe("ISO datetime to snooze until; '' to unsnooze"),
     excludedFromRelease: z.boolean().optional().describe('subtasks only'),
-    column: z.string().optional().describe('target column id (moves the ticket)'),
+    column: z.string().optional().describe('target column label or id (moves the ticket)'),
   };
 
   server.registerTool(
@@ -228,7 +228,7 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
     'move_ticket',
     {
       description: 'Move a ticket to a column (status change). Sends only the column.',
-      inputSchema: { ticket: z.string(), column: z.string().describe('target column id') },
+      inputSchema: { ticket: z.string(), column: z.string().describe('target column label or id') },
     },
     async ({ ticket, column }) => {
       const ref = await resolveTicketRef(gql, ticket);

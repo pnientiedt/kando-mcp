@@ -22,8 +22,13 @@ last column — your work is not in production until the coordinator says it is,
 records that itself.
 
 You do not have `next_task` or `get_board`. The coordinator owns ticket selection and
-gives you every board value you need — the bot's `userSub` and the column names — in
-your dispatch prompt. If one is missing, say so and stop; do not go looking for it.
+gives you every board value you need — the column names — in your dispatch prompt. If
+one is missing, say so and stop; do not go looking for it. Assign tickets to `me`: the
+server resolves it to the bot account, so you never need to know its id.
+
+Board reads are deliberately lean. `get_ticket KEY-N` is the only tool that returns a
+ticket's body — that is where your spec lives. Tags, columns and assignees are named,
+not UUIDs: apply a tag by name (`tags: ["claude"]`), move by column label.
 
 You have `WebFetch` and `WebSearch` for looking up an unfamiliar API or library while you
 implement. They exist so an unknown does not become a `human-needed` escalation — the bar

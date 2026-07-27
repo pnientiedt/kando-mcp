@@ -240,3 +240,13 @@ describe('get_ticket', () => {
     expect(out.subtasks).toBeUndefined();
   });
 });
+
+describe('tool descriptions state the new contract', () => {
+  it('get_board and search_tickets point at get_ticket for bodies', () => {
+    const { host, configs } = captureHost();
+    registerReadTools(host, (async () => ({})) as never);
+    expect(configs.get_board.description).toMatch(/get_ticket/);
+    expect(configs.get_board.description).not.toMatch(/userSub/);
+    expect(configs.search_tickets.description).toMatch(/get_ticket/);
+  });
+});
