@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "kando": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "kando-mcp",
+        "serve"
+      ]
+    }
+  }
+}
