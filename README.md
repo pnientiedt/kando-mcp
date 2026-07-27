@@ -71,29 +71,26 @@ A background waiter (`.claude/hooks/kando-verify-wait.mjs`) runs them and report
 
 ## Configuration & tests
 
-There is exactly one committed config, and it is **not** what the tests use.
+Two committed configs, and the one the tests use is **not** the one the server uses. Both hold nothing but public ids — the same values any browser is served — and neither holds a credential.
 
-| | `kando.config.json` | the live e2e test |
+| | `kando.config.json` | `kando.config.dev.json` |
 |---|---|---|
-| What it is | region, Cognito pool/client, and GraphQL URL of the **hosted production** Kando | the same four values, supplied per-run via `KANDO_TEST_*` env vars |
-| Who reads it | the installed server (`serve`, `login`, `init`) — i.e. real work against your real boards | `src/live.e2e.test.ts` only |
-| Committed? | yes, it's public config | no — nothing about the test target is committed, credentials least of all |
+| Stage | the hosted **production** Kando | the maintainer's **dev** stage |
+| Read by | the installed server: `serve`, `login`, `init` — real work on your real boards | `src/live.e2e.test.ts` only; excluded from the published package |
 
-They are kept separate on purpose: the two stages differ only by opaque ids, so a test that inherited its target from the shipped config could run against production and still look green.
+They are separate on purpose: the stages differ only by opaque ids, so a test that inherited its target from the shipped config could run against production and still look green.
 
 `npm test` runs the whole suite **offline** — no network, no account needed. The one test that talks to a real backend, `src/live.e2e.test.ts`, is skipped unless you opt in:
 
 ```bash
-KANDO_LIVE=1 \
-KANDO_TEST_REGION=… KANDO_TEST_POOL_ID=… \
-KANDO_TEST_CLIENT_ID=… KANDO_TEST_GRAPHQL_URL=… \
-KANDO_TEST_EMAIL=… KANDO_TEST_PASSWORD=… \
-npx vitest run src/live.e2e.test.ts
+KANDO_LIVE=1 npx vitest run src/live.e2e.test.ts
 ```
 
-Point it at a **non-production** stage. All six variables are required — there is no default and no fallback to `kando.config.json`. As a backstop, the resolver **refuses the production pool id outright**; override with `KANDO_ALLOW_PROD=1` only if you genuinely mean it.
+It needs an account on the target stage. Put `KANDO_TEST_EMAIL` / `KANDO_TEST_PASSWORD` in the environment, or in a gitignored `.env.test.local` — copy `.env.test.local.example` and fill it in. Real environment variables win over the file, so CI supplies the same names as secrets with no code change.
 
-The test creates a board under a random 8-letter key and deletes it afterwards, which also frees the global `BOARDKEY#<KEY>` registry entry. If that cleanup fails the test fails loudly and names the board to remove by hand.
+**Targeting your own stage** instead of the dev default: set `KANDO_TEST_REGION`, `KANDO_TEST_POOL_ID`, `KANDO_TEST_CLIENT_ID`, and `KANDO_TEST_GRAPHQL_URL` — **all four or none**. A partial set is refused by name, because it would otherwise sign in to one stage's Cognito pool and write through another's API. As a backstop the resolver **refuses the production pool outright**, however it was supplied; `KANDO_ALLOW_PROD=1` overrides that, and you should not need it.
+
+The test creates boards under random 8-letter keys and deletes them, which also frees the global `BOARDKEY#<KEY>` registry entry. That cleanup is asserted rather than assumed: one case deletes a board and then re-claims the same key, which only succeeds if the entry was really released. A failed delete fails the run loudly and names the board to remove by hand.
 
 ## License
 

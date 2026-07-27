@@ -1,25 +1,24 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { srpTokenProvider } from './auth.js';
-import { resolveLiveConfig } from './liveConfig.js';
+import { resolveLiveConfig, PROD_POOL_ID } from './liveConfig.js';
 import { makeGqlClient, type GqlClient } from './graphql.js';
 import { registerReadTools, type ToolHost } from './tools/read.js';
 import { registerTicketTools } from './tools/tickets.js';
 
 /**
- * Live smoke test against a deployed Kando stage — intended to run against DEV,
- * never Prod (KDO-63). Config + credentials come entirely from the environment
- * via resolveLiveConfig, which refuses the Prod pool unless KANDO_ALLOW_PROD=1.
- * Skipped unless KANDO_LIVE=1.
+ * Live smoke test against a deployed Kando stage. Targets DEV by default and
+ * never Prod (KDO-63): resolveLiveConfig takes the stage from the committed
+ * kando.config.dev.json, and refuses the Prod pool unless KANDO_ALLOW_PROD=1.
+ * Credentials come from the environment or gitignored .env.test.local — see
+ * .env.test.local.example. Skipped unless KANDO_LIVE=1:
  *
- *   KANDO_LIVE=1 \
- *   KANDO_TEST_REGION=eu-central-1 KANDO_TEST_POOL_ID=<dev pool> \
- *   KANDO_TEST_CLIENT_ID=<dev client> KANDO_TEST_GRAPHQL_URL=<dev graphql> \
- *   KANDO_TEST_EMAIL=<dev bot> KANDO_TEST_PASSWORD=<dev bot pw> \
- *   npx vitest run src/live.e2e.test.ts
+ *   KANDO_LIVE=1 npx vitest run src/live.e2e.test.ts
  *
  * Cleanup deletes the board via deleteBoard, which since KDO-52 also frees the
- * global BOARDKEY#<KEY> registry row (best-effort) — so a run leaves nothing
- * behind. Each run uses a random 8-letter key.
+ * global BOARDKEY#<KEY> registry row — so a run leaves nothing behind. That is
+ * asserted, not assumed: the last test deletes a board and re-creates one under
+ * the same key, which only succeeds if the registry row was actually freed.
+ * Each run uses a random 8-letter key.
  */
 const LIVE = process.env.KANDO_LIVE === '1';
 
@@ -34,6 +33,7 @@ const randKey = () =>
 
 describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
   let gql: GqlClient;
+  let targetPoolId = '';
   let boardId = '';
   let boardKey = '';
   let lastColumnId = '';
@@ -41,6 +41,7 @@ describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
 
   beforeAll(async () => {
     const { config, creds } = resolveLiveConfig();
+    targetPoolId = config.userPoolId;
     gql = makeGqlClient(config, srpTokenProvider(config, creds));
 
     const host: ToolHost = {
@@ -74,6 +75,12 @@ describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
     }
   });
 
+  // Belt and braces: resolveLiveConfig already refuses Prod, but this run created
+  // real boards — say out loud where they went.
+  it('is pointed at a non-production stage', () => {
+    expect(targetPoolId).not.toBe(PROD_POOL_ID);
+  });
+
   it('login works and the new board is listed', async () => {
     const res = await tools.list_boards({});
     const boards = JSON.parse(res.content[0].text);
@@ -105,5 +112,24 @@ describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
     const afterRes = await tools.get_board({ board: boardKey });
     const after = JSON.parse(afterRes.content[0].text);
     expect(after.items.some((i: any) => i.ticket === ticket)).toBe(false);
+  }, 30_000);
+
+  // The orphan this ticket exists for: a delete that drops the board but leaves
+  // its BOARDKEY#<KEY> row behind, burning the key forever. Board keys are
+  // globally unique, so re-creating under the same key proves the row was freed
+  // — a stronger check than reading the table, and it needs no AWS credentials.
+  it('frees the board key on delete, so it can be claimed again', async () => {
+    const key = randKey();
+    const first = await gql(CREATE_BOARD, { name: `mcp-e2e ${key}`, key });
+    await gql(DELETE_BOARD, { boardId: first.createBoard.id });
+
+    let reclaimedId = '';
+    try {
+      const second = await gql(CREATE_BOARD, { name: `mcp-e2e ${key}`, key });
+      reclaimedId = second.createBoard.id;
+      expect(second.createBoard.key).toBe(key);
+    } finally {
+      if (reclaimedId) await gql(DELETE_BOARD, { boardId: reclaimedId });
+    }
   }, 30_000);
 });
