@@ -347,4 +347,15 @@ describe('next_task description', () => {
     expect(standalone).toBeGreaterThan(started);
     expect(untouched).toBeGreaterThan(standalone);
   });
+
+  it('names every exclusion it applies, pending-ship included', () => {
+    // The skip list is the description's contract. Omitting pending-ship leaves a
+    // caller unable to explain why a ticket it can see is never handed back.
+    const { host, configs } = capture();
+    registerLoopTools(host, (async () => ({})) as never, 'claude@nientiedt.de');
+    const d: string = configs.next_task.description;
+    for (const skipped of ['Done', 'snoozed', 'human-needed', 'pending-ship']) {
+      expect(d).toContain(skipped);
+    }
+  });
 });

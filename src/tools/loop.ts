@@ -168,7 +168,9 @@ export function registerLoopTools(server: ToolHost, gql: Gql, botEmail: string) 
         'For a board it picks in three tiers: (1) subtasks of a STARTED container story (one with a subtask past the first column, incl. Done) — ' +
         'so a container already in flight is finished before anything new is opened; (2) standalone stories; (3) subtasks of untouched containers. ' +
         'On a board where no container has been started, that is simply standalone stories before container swimlanes, as before. ' +
-        'Skips Done, snoozed, human-needed, and tickets assigned to a human. Work units are standalone stories and subtasks.',
+        'Skips Done, snoozed, human-needed, pending-ship, and tickets assigned to a human. ' +
+        'pending-ship marks a ticket the autonomous loop has finished and parked on its branch awaiting a batched deploy — ' +
+        'it is not workable, and the loop clears the tag once the batch ships. Work units are standalone stories and subtasks.',
       inputSchema: { target: z.string().describe('board key/id, or a ticket KEY-N') },
     },
     async ({ target }) => {
