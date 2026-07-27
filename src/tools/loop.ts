@@ -57,6 +57,15 @@ type Unit = { kind: 'story' | 'subtask'; story: any; item: any };
  * subtasks — never a container story itself. (A container whose subtasks are all
  * Done is "started" but contributes only Done subtasks, which the eligibility
  * filter drops, so it cannot block a standalone.)
+ *
+ * **`pending-ship` is a loop-internal hold, not a user-facing tag.** Under batched
+ * deploys a ticket the loop has implemented, reviewed and parked on its
+ * `kando-loop/*` branch is *not* Done — it has not shipped — so it stays in an
+ * in-progress column, still assigned to the bot. That makes it indistinguishable
+ * from workable, and `next_task` would serve it again forever. The coordinator
+ * tags it `pending-ship` on review pass and clears the tag when the batch merges
+ * to `main` and its verification goes green. Excluding it here is what lets the
+ * loop advance past its own finished work.
  */
 // `firstCol` is the board's FIRST column id (lowest `order`, not array position) —
 // only the board scope reads it; selectNextTask has already sorted the columns and
@@ -97,6 +106,7 @@ export function selectNextTask(bc: any, scope: WorkScope, botSub: string | null)
   if (!cols.length) return null;
   const lastCol = cols[cols.length - 1].id;
   const hnId = (bc.tags ?? []).find((t: any) => (t.name ?? '').toLowerCase() === 'human-needed')?.id;
+  const psId = (bc.tags ?? []).find((t: any) => (t.name ?? '').toLowerCase() === 'pending-ship')?.id;
   const now = Date.now();
 
   // Order = subtasks of STARTED containers, then standalone stories, then subtasks of
@@ -111,6 +121,7 @@ export function selectNextTask(bc: any, scope: WorkScope, botSub: string | null)
     if (item.columnId === lastCol) return false; // Done
     if (typeof item.visibleAt === 'string' && Date.parse(item.visibleAt) > now) return false; // snoozed
     if (hnId && (item.tags ?? []).includes(hnId)) return false; // human-needed
+    if (psId && (item.tags ?? []).includes(psId)) return false; // on the loop branch, awaiting a flush
     const a = item.assignee ?? null;
     if (a && a !== botSub) return false; // assigned to a human
     return true;

@@ -117,6 +117,40 @@ describe('selectNextTask', () => {
     expect(selectNextTask(snoozed, { kind: 'board' }, 'bot')).toBeNull();
   });
 
+  it('skips a pending-ship unit — work parked on the loop branch is not re-served', () => {
+    // TSK-1 is the normal pick. Tagged pending-ship it is finished-but-unshipped:
+    // still in an in-progress column, still assigned to the bot, and NOT workable.
+    const held = {
+      ...board,
+      tags: [...board.tags, { id: 't-ps', name: 'pending-ship' }],
+      stories: [{ ...board.stories[0], tags: ['t-ps'] }],
+    };
+    expect(selectNextTask(held, { kind: 'board' }, 'bot')).toBeNull();
+  });
+
+  it('matches the pending-ship tag case-insensitively, like human-needed', () => {
+    const held = {
+      ...board,
+      tags: [...board.tags, { id: 't-ps', name: 'Pending-Ship' }],
+      stories: [{ ...board.stories[0], tags: ['t-ps'] }],
+    };
+    expect(selectNextTask(held, { kind: 'board' }, 'bot')).toBeNull();
+  });
+
+  it('serves the ticket again once pending-ship is cleared', () => {
+    const released = {
+      ...board,
+      tags: [...board.tags, { id: 't-ps', name: 'pending-ship' }],
+      stories: [{ ...board.stories[0], tags: [] }],
+    };
+    expect(selectNextTask(released, { kind: 'board' }, 'bot')?.ticket).toBe('TSK-1');
+  });
+
+  it('is unaffected on a board that has no pending-ship tag', () => {
+    // The tag is optional: a board that never defined it behaves exactly as before.
+    expect(selectNextTask(board, { kind: 'board' }, 'bot')?.ticket).toBe('TSK-1');
+  });
+
   it('WITHIN a tier follows board order (lane rank) — column stage is NOT a priority', () => {
     // Both lanes are STARTED containers (each has a Done subtask), so they sit in the
     // same tier and only lane rank can separate them. Their workable subtasks sit in
