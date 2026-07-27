@@ -147,6 +147,15 @@ describe('leanDetail', () => {
     expect(JSON.stringify(d.subtasks)).not.toContain('SIBLING SPEC');
   });
 
+  it('surfaces the creator as an email — provenance survives the trim (TSK-52)', () => {
+    const d = leanDetail({ ...raw, creator: 'u1' }, buildContext(bc()), {
+      kind: 'story',
+      ticket: 'KDO-1',
+      columnLabel: 'Open',
+    });
+    expect(d.creator).toBe('bot@example.com');
+  });
+
   it('carries visibleAt when snoozed and parent for a subtask', () => {
     const d = leanDetail({ ...raw, visibleAt: '2099-01-01T00:00:00Z' }, buildContext(bc()), {
       kind: 'subtask',

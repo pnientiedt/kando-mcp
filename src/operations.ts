@@ -42,8 +42,14 @@ export const ARCHIVED_ITEMS = `
     }
   }`;
 
-const storyChange = `boardId kind story { ${storyFields} }`;
-const subtaskChange = `boardId kind subtask { ${subtaskFields} }`;
+// Mutations return an ACK, not an object: enough to name the ticket, nothing more.
+// Deliberately NOT the fat storyFields — that embeds every subtask body, which cost
+// ~19,000 tokens to confirm a column change on a 5-subtask container.
+const ackStoryFields = `id num boardId`;
+const ackSubtaskFields = `id num boardId storyId`;
+
+const storyChange = `boardId kind story { ${ackStoryFields} }`;
+const subtaskChange = `boardId kind subtask { ${ackSubtaskFields} }`;
 const tagChange = `boardId kind tag { ${tagFields} } deletedId`;
 const releaseChange = `boardId kind release { ${releaseFields} } deletedId`;
 

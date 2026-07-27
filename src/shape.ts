@@ -84,6 +84,9 @@ export function leanDetail(raw: any, ctx: BoardCtx, o: DetailOpts): Record<strin
   if (raw.tags?.length) out.tags = raw.tags.map((t: string) => ctx.tagName.get(t) ?? t);
   if (raw.assignee) out.assignee = ctx.memberEmail.get(raw.assignee) ?? raw.assignee;
   if (raw.releaseId) out.release = ctx.releaseName.get(raw.releaseId) ?? raw.releaseId;
+  // Provenance (TSK-52) belongs in the response that explains a ticket, not in
+  // the lists that merely identify one.
+  if (raw.creator) out.creator = ctx.memberEmail.get(raw.creator) ?? raw.creator;
   if (raw.estimateHours != null) out.estimateHours = raw.estimateHours;
   if (raw.visibleAt) out.visibleAt = raw.visibleAt;
   if (raw.excludedFromRelease) out.excludedFromRelease = true;
