@@ -244,11 +244,13 @@ Expected: exactly one file listed, `skills/kando-autonomous-loop/SKILL.md`.
 Read `skills/kando-autonomous-loop/SKILL.md` in full and confirm all four:
 
 1. The coordinator loop still reads as a coherent sequence — the inserted preamble block sits between the verification-command block and the `For each target` line, not inside either.
-2. Every `<userSub>`, `<in-progress column>`, and `<last column>` placeholder appears inside the worker prompt blockquote, where the coordinator substitutes it — never in the coordinator's own instructions.
+2. The `<userSub>`, `<in-progress column>`, and `<last column>` placeholders appear in exactly two places: the worker prompt blockquote (steps 2 and 8), where they are substituted, and coordinator step 3, which names them as the things to substitute. Nowhere else.
 3. The review inner loop (step 4) is **byte-identical to `main` apart from the `model: sonnet` insertion in 4a**. Confirm with:
 
-   Run: `git diff main...HEAD -- skills/kando-autonomous-loop/SKILL.md | grep -c "^[-+].*round"`
-   Expected: `0`.
+   Run: `git diff main...HEAD -- skills/kando-autonomous-loop/SKILL.md | grep -E "^[-+].*(round\+\+|round > 3|max \*\*3\*\*|rounds\))"`
+   Expected: no output.
+
+   Do **not** grep for the bare word `round` — `run_in_back`**`ground`** contains it, so the tiering edits from Task 1 match and the check reports a failure that isn't there.
 
 4. The `## Never` section is unchanged.
 
