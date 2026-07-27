@@ -97,13 +97,19 @@ fetch per interruption — still far below one per worker.
    - `blocked` → the ticket MUST carry `claude` + `human-needed`. Count it toward the circuit breaker.
 7. **Decide whether to flush**, then loop back to step 1 for the **same target**. Call `next_task(target)` here and carry its result into step 1 — one call, used for both.
 
-   **The mechanical trigger is a CONTAINER STORY completing — nothing else.** It applies only when the ticket you just finished was a **subtask**:
-   - finished a **subtask**, and the next task's `storyId` differs or it returned `{ "none": true }` → **that story is complete. Flush now**, then continue;
-   - finished a **subtask**, same `storyId` → the story has more subtasks. Keep working. Do **not** flush per subtask; that is the entire point of this design.
+   Two things govern this, and they are different in kind. **Container stories are a hard rule. Everything else is judgement.**
 
-   **A standalone story finishing is NOT a trigger.** `next_task` sets `storyId` only for subtasks, so a standalone story reports `undefined`. Do not read that `undefined` as a story boundary against the next ticket's `storyId` — it is the *absence* of a story, not a different one. Treating it as a boundary is how a one-line flaky-test fix ends up buying its own production deploy, which is exactly what this design exists to prevent. Let it park on the branch and ride along with the next batch.
+   **Hard rule — a container story ships WHOLE.** It applies when the ticket you just finished was a **subtask**:
+   - next task's `storyId` is the **same** → **never flush**. Half a story in production is the outcome this design exists to prevent, whatever else is on the branch.
+   - next task's `storyId` **differs**, or it returned `{ "none": true }` → the container is complete → **flush**.
 
-   Beyond that trigger you may flush **on judgement**, when what has accumulated reads as a coherent unit somebody would actually deploy. Standing bias: a chore, a flaky-test fix, a docs or config change never earns a deploy of its own. A run of nothing but standalone stories has no mechanical boundary at all — it leans entirely on this judgement plus the exit flush, and the exit flush guarantees nothing is stranded.
+   **Judgement — is this a meaningful package?** Everywhere else, and in particular when you have just finished a **standalone story**, ask the one question that matters: *has enough accumulated that a person would deliberately deploy it — real impact, sensible scope?*
+   - a substantial bug fix, a self-contained feature, a set of related fixes → **yes, flush.** A meaningful standalone story earns its own deploy; do not make it wait.
+   - a chore, a flaky-test fix, a docs or config tweak, a one-liner → **no.** It parks on the branch and rides along with the next batch, which costs it nothing and saves a deploy nobody wanted.
+
+   **Never let a bare `storyId` comparison stand in for that judgement.** `next_task` sets `storyId` only for subtasks, so a standalone story reports `undefined`. `undefined` against the next ticket's `storyId` is not a boundary — it is the *absence* of a story. Reading it as one is how a one-line flaky-test fix buys itself a production deploy.
+
+   A run of nothing but standalone stories therefore has no hard rule at all: it is judgement the whole way, plus the exit flush, which guarantees nothing is stranded.
 
 Final summary: cumulative counts of done / human-needed / skipped, the stop reason, and — if a limit tripped mid-run — which target it stopped on. Also report the **loop branch name**, the **batches shipped** (merge sha per batch), and any tickets left `pending-ship`.
 
@@ -114,8 +120,11 @@ deploy, and run the repo's full verification once for the whole batch. **You** d
 never a worker. Three things trigger one:
 
 - **a container story completes** — step 7's `storyId` comparison after a **subtask**, or
-  `{ "none": true }`. A standalone story finishing is *not* a trigger;
-- **your judgement** — the accumulated work reads as a coherent, deployable unit;
+  `{ "none": true }`. This one is a hard rule: a container ships whole, never in halves;
+- **your judgement that what has accumulated is a meaningful package** — real impact,
+  sensible scope, something a person would deploy on purpose. This is what decides after
+  a **standalone story**: a substantial fix earns its own deploy, a chore or a
+  flaky-test fix rides along with the next batch;
 - **the run is about to exit** — for *any* reason: target exhausted, max-tasks, circuit
   breaker. Nothing is ever left silently unshipped. (The one exception is a red flush
   that exhausted its fixers: it has already reverted, and there is nothing to ship.)
@@ -291,7 +300,8 @@ Dispatch a FRESH general-purpose subagent (it did NOT write this code) with:
 - **Never mark a ticket `done` before its batch's merge commit is on `main` AND the verification has gone green.** A ticket sitting on the loop branch under `pending-ship` is NOT done, however finished and well-reviewed it is. Only **you** set `done`, and only at step 3 of a green flush.
 - **Never let a worker push `main`.** Workers push `kando-loop/<run-id>` and nothing else; the merge is yours alone.
 - **Never exit the run with work left on the branch.** Every stop path flushes first — the sole exception being a red flush that exhausted its fixers and already reverted.
-- **Never flush per subtask.** A story ships as one deploy; a chore, a flaky-test fix or a docs change does not earn a deploy of its own.
+- **Never flush mid-container-story.** A container ships whole, as one deploy; half of one in production is the failure this design exists to prevent.
+- **Never ship a batch nobody would deploy on purpose.** A chore, a flaky-test fix or a docs change does not earn a deploy of its own — it rides along. A meaningful standalone story does, and should not be made to wait.
 - Never stop the loop to ask for deploy authorization — `/kando-loop` is the standing authorization to push the loop branch, merge it to `main`, and deploy.
 - Never push before the independent review passes. The reviewer is NEVER the implementer — always a fresh, separate agent.
 - Never skip TDD when the change is testable; never accept a false "no testable surface" exemption.

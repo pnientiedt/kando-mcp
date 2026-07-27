@@ -101,12 +101,16 @@ finished was a **subtask**, the coordinator compares its `storyId` against the n
 task's: if it differs, or `next_task` returns `{none: true}`, that story is complete —
 flush before dispatching the next worker. This costs no extra board calls.
 
-**A standalone story finishing is deliberately NOT a trigger.** `storyId` is `undefined`
-for a standalone story, and that `undefined` must not be read as a boundary against the
-next ticket's `storyId` — it is the absence of a story, not a different one. Reading it
-as a boundary would give a one-line flaky-test fix its own production deploy, the exact
-outcome this design exists to prevent. A standalone story parks on the branch and rides
-along with the next batch, or ships at the exit flush.
+This is the design's one **hard rule**: a container ships whole, never in halves.
+
+**A standalone story completing is an evaluation point, not an automatic flush.**
+`storyId` is `undefined` for a standalone story, and that `undefined` must not be read
+as a boundary against the next ticket's `storyId` — it is the absence of a story, not a
+different one. Reading it as a boundary is what gives a one-line flaky-test fix its own
+production deploy. But the answer is not to forbid the flush: it is to *ask the
+question*. A substantial standalone bug fix or self-contained feature is a meaningful
+package and earns its own deploy; a chore, flaky-test fix or docs tweak does not, and
+rides along with the next batch. Meaningfulness decides, not the shape of the ticket.
 
 **The coordinator judges it worth shipping.** Beyond the mechanical boundary, the
 coordinator may flush when the accumulated work reads as a coherent, deployable unit.
