@@ -10,6 +10,7 @@
   "files": [
     "dist",
     "skills",
+    "agents",
     "commands",
     "assets",
     "kando.config.json",

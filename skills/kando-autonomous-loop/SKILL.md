@@ -34,15 +34,32 @@ Illustrations, **not a menu** — a Buildkite or Jenkins repo gets commands you 
 
 If you can compose neither, skip the wait entirely and fall back to the green-local-build gate described in the worker prompt.
 
+**On each board's first ticket, call `get_board` once — then never again for that
+board.** Pass **`fields: ["board", "members"]`**: you need the columns and the bot's
+`userSub`, not every ticket, tag, and release on the board. The worker does not call it. Cache three things per board: the bot member's
+`userSub`, the in-progress column, and the last column. Key this **per board, not per
+run** — a multi-target run can span several boards.
+
+Restate the cache as a compact run header at the top of **every** turn:
+
+```
+board TSK → userSub abc-123, in-progress "In Progress", last "Done"
+```
+
+You end your turn during the step-5 verification wait and are re-invoked by heartbeats,
+so a cache held only in context does not survive. If the header is missing when you
+resume, re-fetch `get_board` for the board you are on. Worst case that costs one fetch
+per interruption — still far below one per worker.
+
 **For each `target` in the list, in order, repeat until it is exhausted:**
 
 1. Call `next_task(target)`. If it returns `{ "none": true }` → this target is **exhausted**: go to the **next target** (or, if it was the last, **stop — success**).
 2. Enforce safety BEFORE dispatching (cumulative across all targets):
    - If `done + human-needed ≥ 25` → **stop (max-tasks)**.
    - If the last **3** results in a row were `human-needed` → **stop (circuit breaker)**.
-3. Dispatch ONE worker subagent (Agent tool, general-purpose, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
+3. Record the ticket's **base sha** (`git rev-parse HEAD`) — one line of output, and the reviewer's diff range for every round of this ticket. Then dispatch ONE worker subagent (Agent tool, **`subagent_type: kando-worker`**, **`model: sonnet`**, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`, substituting this board's cached `<userSub>`, `<in-progress column>`, and `<last column>` into it. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
 4. **Independent review inner loop** (max **3** rounds) — while the worker reports `ready-for-review`:
-   a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, general-purpose, **`run_in_background: false`**) with the **reviewer prompt** below, giving it the ticket intent and the diff. It returns a BLOCKING list and an ADVISORY list.
+   a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, **`subagent_type: kando-reviewer`**, **`model: sonnet`**, **`run_in_background: false`**) with the **reviewer prompt** below, giving it the ticket intent and the **diff range** `<base-sha>..HEAD`. **Never run `git diff` yourself and never paste a diff into the prompt** — that pays for it twice, once in your context and once in the reviewer's, and you never read it. The reviewer runs the diff itself. Every round uses the SAME base sha, so each fresh reviewer sees the complete ticket diff, not just the latest fix. It returns a BLOCKING list and an ADVISORY list.
    b. **No blocking findings** → SendMessage the worker: `review passed — ship it`. Go to step 5.
    c. **Blocking findings** → SendMessage the worker the findings. It fixes, recommits, and reports `ready-for-review` again. `round++`.
    d. If `round > 3` and still blocking → SendMessage the worker: `block it: <findings>`. It tags `human-needed` + writes a Blocked note; treat the result as `blocked`.
@@ -61,19 +78,61 @@ If you can compose neither, skip the wait entirely and fall back to the green-lo
 
 Final summary: cumulative counts of done / human-needed / skipped, the stop reason, and — if a limit tripped mid-run — which target it stopped on.
 
+## Model tiering — deliberate, not an oversight
+
+Workers and reviewers are dispatched with an explicit **`model: sonnet`**. Both execute
+against criteria that are already written down: the worker implements TDD against the
+ticket's `## 📋 Specification`, the reviewer judges a diff against stated intent. A run
+can boot 50–100 of these agents, so their tier dominates its cost.
+
+**You are the exception — do not override your own model.** The coordinator keeps the
+session model, because it holds the judgment seats: interpreting a waiter exit code,
+tripping the circuit breaker, deciding `block it`. Those are where a wrong call is
+expensive and rare enough not to matter to cost.
+
+**Never drop the reviewer to `haiku`.** Its hardest task is judging whether tests are
+trivial, gamed, or clearly not written test-first — the exact discrimination the review
+gate exists to make, and the last thing to cheapen.
+
+## Both subagents are tool-restricted — for safety, not for tokens
+
+`kando-mcp init` installs two agent definitions into `.claude/agents/`, and the loop
+dispatches them by `subagent_type`:
+
+- **`kando-reviewer`** has no board tools and no edit tools. It *cannot* move a ticket or
+  push, so the independence the review gate depends on is enforced by its toolset rather
+  than by asking nicely.
+- **`kando-worker`** holds 8 of the server's 21 board tools — enough to read a ticket,
+  update and move the one it was given, ensure a tag, and create a story or subtask to
+  record a finding. It has **no** `delete_ticket`, `archive_ticket`, `delete_tag`, or
+  `delete_release`. This loop runs unattended, with standing authorization to push,
+  across up to 25 tickets; nothing destructive should be within reach of the agent doing
+  the work.
+
+**The token saving is small** — MCP schemas load on demand, so a restriction drops tool
+*names*, not full schemas. Take these restrictions for the blast radius they remove.
+
+**If either agent type is unavailable** — an older `init`, a repo where the files were
+not installed, or a session started *before* they were — the dispatch fails with
+`Agent type not found`. That is a hard error, not a silent fallback: catch it, re-dispatch
+that one agent as `general-purpose`, and carry on. The loop still works; it just leans on
+the prompt for the guarantees the toolset would have enforced. **Agent definitions are
+read at session start**, so a fresh `init` does not take effect until the session is
+restarted.
+
 ## Worker prompt (one ticket; hands back to the coordinator at the review gate)
 
 Dispatch a general-purpose subagent with this instruction (substitute the real `KEY-N`):
 
 > You are a Kando worker. Work ONLY ticket **KEY-N**. Follow the `kando` skill's record-then-code gate AND the `test-driven-development` skill. Steps:
 > 1. **Tag `claude` FIRST — before anything else.** `ensure_tag <board> claude`, then `update_ticket KEY-N` to apply its id (keep any tags the ticket already has), so the board shows it's being worked.
-> 2. `get_ticket KEY-N` and `get_board` (for the bot's member `userSub`). Assign the ticket to the bot, move it to the in-progress column, and append a `## 🤖 Claude — Plan` section (preserve the original body). **If the body has a `## 📋 Specification` section, that is the authoritative spec — build to it (do not re-derive intent from the title).**
+> 2. `get_ticket KEY-N`. Assign the ticket to `<userSub>`, move it to the `<in-progress column>` column, and append a `## 🤖 Claude — Plan` section (preserve the original body). **Do NOT call `get_board`** — the coordinator has already given you every board value you need. **If the body has a `## 📋 Specification` section, that is the authoritative spec — build to it (do not re-derive intent from the title).**
 > 3. **TDD — write failing test(s) FIRST (RED).** Before any implementation, add test(s) covering the ticket's intended behavior using the repo's **existing** test suites/frameworks (match their patterns; do not invent a parallel harness). Run them and confirm they **fail for the right reason**. If a `## 📋 Specification` section exists, write these tests against its **Acceptance criteria**. *Exemption:* only if the change has genuinely no testable runtime surface (pure docs/config) — state that and why in the Plan section; the reviewer will verify it.
 > 4. **Implement to green (GREEN).** Minimal code to make those tests pass; then run the full suite (and build, if any) and confirm it is green.
 > 5. **Commit LOCALLY — do NOT push.** Append a `## 🤖 Claude — Done` section. `git commit`. Then **report `ready-for-review`** and STOP — do not push. The coordinator will have an independent reviewer look at your diff.
 > 6. **When the coordinator sends review findings:** fix every BLOCKING one, keep the suite green, `git commit`, and report `ready-for-review` again. (Apply low-risk ADVISORY suggestions too, or note them in the Done section.)
 > 7. **When the coordinator says `review passed — ship it`:** land the change on **`main`** — if you worked on a branch, merge it with `git merge --no-ff` (or commit directly on `main`), then **push `main`**. Running `/kando-loop` authorizes this — it is a standing pre-authorization to deploy; do NOT stop to ask, and do NOT leave the work on a branch or an open PR. Then report **`pushed`** with the commit sha and STOP. **Do not watch any pipeline yourself** — the coordinator owns that wait. (If the repo has no verification pipeline, the coordinator will tell you to finish immediately on your green local build.)
-> 8. **When the coordinator says `verified green, finish up`:** move the ticket to the last column, record a **deep link** (the `main` commit URL, plus the pipeline run URL if there is one) in the Done section, and report **`done`**.
+> 8. **When the coordinator says `verified green, finish up`:** move the ticket to the `<last column>` column, record a **deep link** (the `main` commit URL, plus the pipeline run URL if there is one) in the Done section, and report **`done`**.
 > 9. **When the coordinator says `block it`:** `ensure_tag <board> human-needed`, apply it (keep `claude`), append a `## 🤖 Claude — Blocked` section with the outstanding findings and what you tried, leave the ticket un-shipped, report **`blocked`**.
 > Report exactly one word each turn — `ready-for-review`, `pushed`, `done`, or `blocked` — with a one-line reason. Never push before the coordinator says the review passed.
 
@@ -81,7 +140,7 @@ Dispatch a general-purpose subagent with this instruction (substitute the real `
 
 Dispatch a FRESH general-purpose subagent (it did NOT write this code) with:
 
-> You are an INDEPENDENT code reviewer for Kando ticket **KEY-N**. You did not write this change; do not trust any implementer narrative. You are given the ticket **intent** (title/body/Plan) and the **diff** (`git diff` of the ticket's local commits). Review the diff directly and sort findings into two buckets and report both. (Do NOT try to invoke the `/code-review` skill — it can't be called by a subagent; apply code-review principles yourself.)
+> You are an INDEPENDENT code reviewer for Kando ticket **KEY-N**. You did not write this change; do not trust any implementer narrative. You are given the ticket **intent** (title/body/Plan) and a **diff range**. **Run `git diff <base-sha>..HEAD` yourself** — that is the complete change under review. Review the diff directly and sort findings into two buckets and report both. (Do NOT try to invoke the `/code-review` skill — it can't be called by a subagent; apply code-review principles yourself.)
 > - **BLOCKING** (must be fixed before this ships):
 >   - **correctness** — real bugs, logic errors, unhandled edge cases in the diff;
 >   - **adherence** — the change does not actually do what the ticket asked, or cuts corners; OR the tests are trivial / gamed / do not exercise the change / were clearly not written test-first; OR the change claims a "no testable surface" TDD exemption but a testable surface plainly exists.
@@ -108,6 +167,7 @@ Dispatch a FRESH general-purpose subagent (it did NOT write this code) with:
 - Short waits — worker dispatch, reviewer dispatch, review round-trips — are **synchronous** (`run_in_background: false`). The coordinator is strictly sequential and needs each result before continuing, so backgrounding them buys nothing and makes a lost notification fatal.
 - The one genuinely long wait — verification after a push — is a **heartbeat stream** via `Monitor`, never a blocking call *of yours*. **Never run a pipeline watch (`gh run watch` or any equivalent) in your own foreground:** it blocks with no heartbeat, and a foreground command is capped at 10 minutes anyway — that combination is the original hang this design removed. A blocking watch is fine *inside* the waiter, where it is raced against the poll and the waiter is the thing emitting heartbeats. The rule is about who blocks, not about blocking.
 - A wait that produces no output is indistinguishable from a wait that died. If you are waiting, something must be emitting.
+- **A permission prompt is a silent wait too.** `kando-mcp init` pre-grants the board tools this loop calls, so an unattended run never blocks on one. If a dispatch reports a missing permission, the repo was installed by an older `init` — re-run it rather than sitting there. The destructive tools are deliberately *not* pre-granted, and the `kando-worker` agent withholds them independently.
 
 ## Never
 
