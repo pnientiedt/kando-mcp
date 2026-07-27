@@ -34,7 +34,7 @@ Turn a rough Kando ticket into an implementable spec through an interactive dial
    ```
 
 3. `update_ticket KEY-N` with `body` = the full combined text. Never send a body that drops the human's words, and never a section-only body.
-4. `ensure_tag <board> refined`, then `update_ticket KEY-N` to apply its id (keep existing tags) — the "has an agreed spec" marker. **Keep the `human-needed` lock for now**; you release it in **Finish** below.
+4. `ensure_tag <board> refined`, then `update_ticket KEY-N` with `tags` = the ticket's current tag **names** plus `refined` (keep existing tags) — the "has an agreed spec" marker. **Keep the `human-needed` lock for now**; you release it in **Finish** below.
 5. Continue to the decomposition offer below. (For a subtask target, skip straight to **Finish**.)
 
 ## Decompose a big story into subtasks (only when a breakdown is RECOMMENDED — story targets only)
@@ -55,13 +55,13 @@ Runs **after** the Specification is written, and **only when the target is a sto
      **Acceptance criteria:** <concrete, testable bullets>
      **Out of scope:** …
      ```
-   - `ensure_tag <board> refined`, then `update_ticket` the new subtask to apply its id (keep any tags).
+   - `ensure_tag <board> refined`, then `update_ticket` the new subtask with `tags: ["refined"]` (keep any tags it already has).
    Create them in discussion order so board rank matches the sequence — `/kando-loop <STORY>` then works them top-to-bottom, each to its own Acceptance criteria.
 5. Then go to **Finish** below.
 
 ## Finish — release the lock and announce
 
-Once the spec (and any decomposition) is done, **release the lock**: `update_ticket KEY-N` with tags = the ticket's current tags **minus `human-needed`** (keep `refined` and everything else). This lets `/kando-loop` pick the ticket up again. Then tell the user the ticket is refined (and, if you decomposed it, split into N subtasks) and ready for `/kando-loop`.
+Once the spec (and any decomposition) is done, **release the lock**: `update_ticket KEY-N` with tags = the ticket's current tag **names minus `human-needed`** (keep `refined` and everything else). This lets `/kando-loop` pick the ticket up again. Then tell the user the ticket is refined (and, if you decomposed it, split into N subtasks) and ready for `/kando-loop`.
 
 ## Never
 

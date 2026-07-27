@@ -55,6 +55,17 @@ Access is **per board**. The account you log in as only sees boards it is a memb
 - **Releases:** `create_release`, `update_release`, `delete_release`
 - **Loop:** `next_task`, `ensure_tag`
 
+### Response shape
+
+Responses are deliberately lean: **lists identify, `get_ticket` explains.** `get_board`
+and `search_tickets` return `KEY-N`, title, column, tags and assignee — **never ticket
+bodies** — and mutations return a short ack (`{"ticket":"TSK-42","col":"In Progress"}`)
+rather than the whole object. `get_ticket` is the one tool that returns a body. On a real
+60-ticket board that is ~2,800 tokens instead of ~163,000.
+
+Nothing needs a UUID: columns, tags, releases and members are addressed by **label,
+name and email**, plus `"me"` for the account you logged in as.
+
 Boards are addressed by **key** (e.g. `TSK`); tickets by **`KEY-N`** (e.g. `TSK-42`). `move_ticket` changes a ticket's column (status); `reorder_ticket` changes its priority within its peer group — they're separate on purpose, so neither wipes the other.
 
 ## Pinning

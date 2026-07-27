@@ -79,7 +79,13 @@ Never send a `body` that drops the human's words, and never send a section-only 
 
 ## Finding work
 
-`search_tickets` with a board plus any of `column`, `assignee` (a member `userSub`), `tag` (tag id), `release` (release id), `text` (matches title + description). Filters combine with AND. `get_board` gives the whole board when you need the full picture.
+`search_tickets` with a board plus any of `column` (label or id), `assignee` (email, `userSub`, or `"me"`), `tag` (name or id), `release` (name or id), `text` (matches title + description). Filters combine with AND. `get_board` gives the whole board when you need the full picture.
+
+### Lists identify; `get_ticket` explains
+
+`get_board` and `search_tickets` return **identifiers only** — `KEY-N`, title, column, tags, assignee — and never ticket bodies. To read a ticket's description or spec, call **`get_ticket KEY-N`**; it is the only tool that returns a body. This is what keeps a 60-ticket board at ~2,800 tokens instead of ~163,000, so don't reach for `get_board` when you want one ticket's content.
+
+Everything is addressed the way it is displayed: **column labels, tag names, release names, member emails** — plus `"me"` for the account the server is authenticated as. You never need a UUID.
 
 ## Editing
 
@@ -87,7 +93,8 @@ Never send a `body` that drops the human's words, and never send a section-only 
 - **Clearing a field:** pass an empty string `""` for `assignee`, `releaseId`, or `visibleAt`. Omit a field to leave it unchanged.
 - `create_story` / `create_subtask` add new tickets (a subtask needs a parent story `KEY-N`). Pass `position` (`{to:'top'|'bottom'}` / `{before:'KEY-N'}` / `{after:'KEY-N'}`) to place one somewhere other than the bottom.
 - `reorder_ticket` changes only a ticket's **priority order** within its peer group — `to: 'top'|'bottom'`, or `before`/`after` another `KEY-N` (exactly one). Peers: a subtask ranks among its parent story's subtasks in the same column, a standalone story among its column's standalone stories, a container story among the board's lanes. Use `move_ticket` to change the column.
-- Tags and releases are per-board registries — create one with `create_tag` / `create_release` before applying its id.
+- Tags and releases are per-board registries — create one with `create_tag` / `create_release` (or `ensure_tag`) before applying it **by name**. Applying a name that doesn't exist is an error, never a silent create.
+- Mutations return a short **ack** (`{"ticket":"TSK-42","col":"In Progress"}`), not the whole ticket. If you need the ticket back, `get_ticket` it.
 
 ## Archive vs delete
 

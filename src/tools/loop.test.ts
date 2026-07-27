@@ -34,7 +34,8 @@ describe('ensure_tag', () => {
     const { host, tools } = capture();
     registerLoopTools(host, gql as never, 'claude@nientiedt.de');
     const res = JSON.parse((await tools.ensure_tag({ board: 'TSK', name: 'claude' })).content[0].text);
-    expect(res).toEqual({ id: 't-claude', name: 'claude', created: false });
+    // Acks by NAME: callers apply tags by name now, so an id would be dead weight.
+    expect(res).toEqual({ tag: 'claude', created: false });
     expect(gql).not.toHaveBeenCalledWith(expect.stringContaining('createTag'), expect.anything());
   });
 
@@ -48,7 +49,7 @@ describe('ensure_tag', () => {
     const { host, tools } = capture();
     registerLoopTools(host, gql as never, 'claude@nientiedt.de');
     const res = JSON.parse((await tools.ensure_tag({ board: 'TSK', name: 'human-needed' })).content[0].text);
-    expect(res).toEqual({ id: 't-new', name: 'human-needed', created: true });
+    expect(res).toEqual({ tag: 'human-needed', created: true });
     expect(gql).toHaveBeenCalledWith(expect.stringContaining('createTag'), {
       boardId: 'b1',
       name: 'human-needed',

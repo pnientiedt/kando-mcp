@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { type Gql, type ToolHost, toolText, resolveBoardId } from './read.js';
 import { resolveTicketRef, type TicketRef } from '../tickets.js';
 import { parsePosition, planReorder, POSITION_RULE, type Position } from '../reorder.js';
+import { ack } from '../shape.js';
+import { resolveColumnId, resolveTagIds, resolveReleaseId, resolveAssignee } from '../resolve.js';
 import { GET_BOARD } from '../operations.js';
 import {
   CREATE_STORY,
@@ -47,11 +49,59 @@ export function buildUpdateVars(ref: TicketRef, patch: TicketPatch) {
   return { query: isSub ? UPDATE_SUBTASK : UPDATE_STORY, variables: v };
 }
 
-async function firstColumnId(gql: Gql, boardId: string): Promise<string> {
-  const data = await gql(GET_BOARD, { boardId });
-  const cols = [...(data.getBoard.board.columns ?? [])].sort((a: any, b: any) => a.order - b.order);
+/**
+ * Resolve every human-readable input on a patch to its id, fetching the board at
+ * most once and only when something actually needs resolving. Also returns the
+ * column LABEL, which is what the ack echoes — no second round trip to read it back.
+ */
+async function resolvePatch(
+  gql: Gql,
+  boardId: string,
+  patch: TicketPatch,
+  botEmail: string | null,
+): Promise<{ patch: TicketPatch; colLabel?: string }> {
+  const needs =
+    patch.column !== undefined ||
+    patch.tags !== undefined ||
+    (patch.assignee !== undefined && patch.assignee !== '') ||
+    (patch.releaseId !== undefined && patch.releaseId !== '');
+  if (!needs) return { patch };
+  const bc = (await gql(GET_BOARD, { boardId })).getBoard;
+  const out: TicketPatch = { ...patch };
+  let colLabel: string | undefined;
+  if (patch.column !== undefined) {
+    out.column = resolveColumnId(bc, patch.column);
+    colLabel = (bc.board?.columns ?? []).find((c: any) => c.id === out.column)?.label ?? out.column;
+  }
+  if (patch.tags !== undefined) out.tags = resolveTagIds(bc, patch.tags);
+  if (patch.assignee !== undefined) out.assignee = resolveAssignee(bc, patch.assignee, botEmail);
+  if (patch.releaseId !== undefined) out.releaseId = resolveReleaseId(bc, patch.releaseId);
+  return { patch: out, colLabel };
+}
+
+/** The board plus its rank-sorted columns — creates need both. */
+async function boardForCreate(gql: Gql, boardId: string) {
+  const bc = (await gql(GET_BOARD, { boardId })).getBoard;
+  const cols = [...(bc.board.columns ?? [])].sort((a: any, b: any) => a.order - b.order);
   if (!cols.length) throw new Error('board has no columns');
-  return cols[0].id;
+  return { bc, cols };
+}
+
+/** Shared by create_story / create_subtask: resolve column + registry inputs once. */
+function createVars(
+  bc: any,
+  cols: any[],
+  column: string | undefined,
+  rest: Record<string, any>,
+  botEmail: string | null,
+) {
+  const columnId = column ? resolveColumnId(bc, column) : cols[0].id;
+  const colLabel = cols.find((c: any) => c.id === columnId)?.label ?? columnId;
+  const vars: Record<string, unknown> = { columnId, ...rest };
+  if (rest.tags !== undefined) vars.tags = resolveTagIds(bc, rest.tags);
+  if (rest.assignee !== undefined) vars.assignee = resolveAssignee(bc, rest.assignee, botEmail);
+  if (rest.releaseId !== undefined) vars.releaseId = resolveReleaseId(bc, rest.releaseId);
+  return { vars, colLabel };
 }
 
 /** The `position` argument shared by create_story / create_subtask. */
@@ -77,7 +127,7 @@ async function applyPosition(gql: Gql, ref: TicketRef, position: Position) {
   return res.updateStory?.story ?? res.updateSubtask?.subtask;
 }
 
-export function registerTicketTools(server: ToolHost, gql: Gql) {
+export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string | null = null) {
   server.registerTool(
     'create_story',
     {
@@ -85,11 +135,11 @@ export function registerTicketTools(server: ToolHost, gql: Gql) {
       inputSchema: {
         board: z.string(),
         title: z.string(),
-        column: z.string().optional().describe('column id; defaults to the first column'),
+        column: z.string().optional().describe('column label or id; defaults to the first column'),
         body: z.string().optional(),
-        tags: z.array(z.string()).optional(),
-        assignee: z.string().optional(),
-        releaseId: z.string().optional(),
+        tags: z.array(z.string()).optional().describe('tag NAMES (or ids); create unknown tags with ensure_tag first'),
+        assignee: z.string().optional().describe('member email, userSub, or "me"'),
+        releaseId: z.string().optional().describe('release name or id'),
         estimateHours: z.number().optional(),
         visibleAt: z.string().optional(),
         position: positionShape,
@@ -98,12 +148,14 @@ export function registerTicketTools(server: ToolHost, gql: Gql) {
     async ({ board, column, position, ...rest }) => {
       const pos = position ? parsePosition(position) : null; // validate before creating anything
       const boardId = await resolveBoardId(gql, board);
-      const columnId = column ?? (await firstColumnId(gql, boardId));
-      const data = await gql(CREATE_STORY, { boardId, columnId, ...rest });
+      const { bc, cols } = await boardForCreate(gql, boardId);
+      const { vars, colLabel } = createVars(bc, cols, column, rest, botEmail);
+      const data = await gql(CREATE_STORY, { boardId, ...vars });
       const story = data.createStory.story;
-      if (!pos) return toolText(story);
-      const ref: TicketRef = { boardId, storyId: story.id };
-      return toolText((await applyPosition(gql, ref, pos)) ?? story);
+      if (pos) await applyPosition(gql, { boardId, storyId: story.id }, pos);
+      const key = bc.board?.key ?? null;
+      const ticket = key && typeof story.num === 'number' ? `${key}-${story.num}` : null;
+      return toolText({ ticket, title: rest.title, col: colLabel });
     },
   );
 
@@ -114,11 +166,11 @@ export function registerTicketTools(server: ToolHost, gql: Gql) {
       inputSchema: {
         parent: z.string().describe('parent ticket KEY-N'),
         title: z.string(),
-        column: z.string().optional(),
+        column: z.string().optional().describe('column label or id; defaults to the first column'),
         body: z.string().optional(),
-        tags: z.array(z.string()).optional(),
-        assignee: z.string().optional(),
-        releaseId: z.string().optional(),
+        tags: z.array(z.string()).optional().describe('tag NAMES (or ids); create unknown tags with ensure_tag first'),
+        assignee: z.string().optional().describe('member email, userSub, or "me"'),
+        releaseId: z.string().optional().describe('release name or id'),
         estimateHours: z.number().optional(),
         excludedFromRelease: z.boolean().optional(),
         visibleAt: z.string().optional(),
@@ -130,25 +182,30 @@ export function registerTicketTools(server: ToolHost, gql: Gql) {
       const ref = await resolveTicketRef(gql, parent);
       const storyId = ref.subtaskId ? undefined : ref.storyId;
       if (!storyId) throw new Error('parent must be a story ticket, not a subtask');
-      const columnId = column ?? (await firstColumnId(gql, ref.boardId));
-      const data = await gql(CREATE_SUBTASK, { boardId: ref.boardId, storyId, columnId, ...rest });
+      const { bc, cols } = await boardForCreate(gql, ref.boardId);
+      const { vars, colLabel } = createVars(bc, cols, column, rest, botEmail);
+      const data = await gql(CREATE_SUBTASK, { boardId: ref.boardId, storyId, ...vars });
       const subtask = data.createSubtask.subtask;
-      if (!pos) return toolText(subtask);
-      const subRef: TicketRef = { boardId: ref.boardId, storyId, subtaskId: subtask.id };
-      return toolText((await applyPosition(gql, subRef, pos)) ?? subtask);
+      if (pos) {
+        const subRef: TicketRef = { boardId: ref.boardId, storyId, subtaskId: subtask.id };
+        await applyPosition(gql, subRef, pos);
+      }
+      const key = bc.board?.key ?? null;
+      const ticket = key && typeof subtask.num === 'number' ? `${key}-${subtask.num}` : null;
+      return toolText({ ticket, title: rest.title, col: colLabel, parent });
     },
   );
 
   const patchShape = {
     title: z.string().optional(),
     body: z.string().optional(),
-    tags: z.array(z.string()).optional(),
-    assignee: z.string().optional().describe("member userSub; '' to unassign"),
-    releaseId: z.string().optional().describe("release id; '' to clear"),
+    tags: z.array(z.string()).optional().describe('tag NAMES (or ids); create unknown tags with ensure_tag first'),
+    assignee: z.string().optional().describe("member email, userSub, or \"me\"; '' to unassign"),
+    releaseId: z.string().optional().describe("release name or id; '' to clear"),
     estimateHours: z.number().optional(),
     visibleAt: z.string().optional().describe("ISO datetime to snooze until; '' to unsnooze"),
     excludedFromRelease: z.boolean().optional().describe('subtasks only'),
-    column: z.string().optional().describe('target column id (moves the ticket)'),
+    column: z.string().optional().describe('target column label or id (moves the ticket)'),
   };
 
   server.registerTool(
@@ -157,11 +214,13 @@ export function registerTicketTools(server: ToolHost, gql: Gql) {
       description: 'Edit a ticket (title/body/tags/assignee/release/estimate/snooze/column).',
       inputSchema: { ticket: z.string(), ...patchShape },
     },
-    async ({ ticket, ...patch }) => {
+    async ({ ticket, ...raw }) => {
       const ref = await resolveTicketRef(gql, ticket);
+      const changed = Object.keys(raw).filter((k) => (raw as any)[k] !== undefined);
+      const { patch } = await resolvePatch(gql, ref.boardId, raw as TicketPatch, botEmail);
       const { query, variables } = buildUpdateVars(ref, patch);
-      const data = await gql(query, variables);
-      return toolText(data.updateStory?.story ?? data.updateSubtask?.subtask);
+      await gql(query, variables);
+      return toolText(ack(ticket, { updated: changed }));
     },
   );
 
@@ -169,13 +228,14 @@ export function registerTicketTools(server: ToolHost, gql: Gql) {
     'move_ticket',
     {
       description: 'Move a ticket to a column (status change). Sends only the column.',
-      inputSchema: { ticket: z.string(), column: z.string().describe('target column id') },
+      inputSchema: { ticket: z.string(), column: z.string().describe('target column label or id') },
     },
     async ({ ticket, column }) => {
       const ref = await resolveTicketRef(gql, ticket);
-      const { query, variables } = buildUpdateVars(ref, { column });
-      const data = await gql(query, variables);
-      return toolText(data.updateStory?.story ?? data.updateSubtask?.subtask);
+      const { patch, colLabel } = await resolvePatch(gql, ref.boardId, { column }, botEmail);
+      const { query, variables } = buildUpdateVars(ref, patch);
+      await gql(query, variables);
+      return toolText(ack(ticket, { col: colLabel ?? column }));
     },
   );
 
@@ -197,7 +257,8 @@ export function registerTicketTools(server: ToolHost, gql: Gql) {
     async ({ ticket, to, before, after }) => {
       const position = parsePosition({ to, before, after }); // validate before any network call
       const ref = await resolveTicketRef(gql, ticket);
-      return toolText(await applyPosition(gql, ref, position));
+      await applyPosition(gql, ref, position);
+      return toolText(ack(ticket, { position: to ?? (before ? `before ${before}` : `after ${after}`) }));
     },
   );
 
@@ -227,15 +288,15 @@ export function registerTicketTools(server: ToolHost, gql: Gql) {
     async ({ ticket }) => {
       const ref = await resolveTicketRef(gql, ticket);
       if (ref.subtaskId) {
-        const d = await gql(UNARCHIVE_SUBTASK, {
+        await gql(UNARCHIVE_SUBTASK, {
           boardId: ref.boardId,
           storyId: ref.storyId,
           subtaskId: ref.subtaskId,
         });
-        return toolText(d.unarchiveSubtask.subtask);
+      } else {
+        await gql(UNARCHIVE_STORY, { boardId: ref.boardId, storyId: ref.storyId });
       }
-      const d = await gql(UNARCHIVE_STORY, { boardId: ref.boardId, storyId: ref.storyId });
-      return toolText(d.unarchiveStory.story);
+      return toolText({ unarchived: ticket });
     },
   );
 

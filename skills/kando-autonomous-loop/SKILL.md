@@ -56,16 +56,20 @@ you ever touch `main`.
   boards. After each green flush it is fast-forwarded to `main` and reused.
 
 **On each board's first ticket, call `get_board` once — then never again for that
-board.** Pass **`fields: ["board", "members"]`**: you need the columns and the bot's
-`userSub`, not every ticket, tag, and release on the board. The worker does not call it. Cache three things per board: the bot member's
-`userSub`, the in-progress column, and the last column. Key this **per board, not per
-run** — a multi-target run can span several boards.
+board.** Pass **`fields: ["board"]`**: you need the column names and nothing else. The
+worker does not call it. Cache two things per board: the in-progress column and the
+last column. Key this **per board, not per run** — a multi-target run can span several
+boards.
+
+There is no `userSub` to cache: `assignee: "me"` resolves to the bot account the
+server is authenticated as, so a worker assigns its ticket without you telling it who
+the bot is.
 
 Restate the cache as a compact run header at the top of **every** turn:
 
 ```
 branch kando-loop/20260727-153000 | batch TSK-11, TSK-12
-board TSK → userSub abc-123, in-progress "In Progress", last "Done"
+board TSK → in-progress "In Progress", last "Done"
 ```
 
 You end your turn during the flush verification wait and are re-invoked by heartbeats,
@@ -81,7 +85,7 @@ fetch per interruption — still far below one per worker.
 2. Enforce safety BEFORE dispatching (cumulative across all targets):
    - If `done + human-needed ≥ 25` → **flush, then stop (max-tasks)**.
    - If the last **3** results in a row were `human-needed` → **flush, then stop (circuit breaker)**.
-3. Record the ticket's **base sha** (`git rev-parse HEAD`, on the loop branch) — one line of output, and the reviewer's diff range for every round of this ticket. Then dispatch ONE worker subagent (Agent tool, **`subagent_type: kando-worker`**, **`model: sonnet`**, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`, substituting this board's cached `<userSub>`, `<in-progress column>`, and `<last column>` into it. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
+3. Record the ticket's **base sha** (`git rev-parse HEAD`, on the loop branch) — one line of output, and the reviewer's diff range for every round of this ticket. Then dispatch ONE worker subagent (Agent tool, **`subagent_type: kando-worker`**, **`model: sonnet`**, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`, substituting this board's cached `<in-progress column>` and `<last column>` into it. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
 4. **Independent review inner loop** (max **3** rounds) — while the worker reports `ready-for-review`:
    a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, **`subagent_type: kando-reviewer`**, **`model: sonnet`**, **`run_in_background: false`**) with the **reviewer prompt** below, giving it the ticket intent and the **diff range** `<base-sha>..HEAD`. **Never run `git diff` yourself and never paste a diff into the prompt** — that pays for it twice, once in your context and once in the reviewer's, and you never read it. The reviewer runs the diff itself. Every round uses the SAME base sha, so each fresh reviewer sees the complete ticket diff, not just the latest fix. It returns a BLOCKING list and an ADVISORY list.
    b. **No blocking findings** → SendMessage the worker: `review passed — push the branch`. Go to step 5.
@@ -251,8 +255,8 @@ restarted.
 Dispatch a general-purpose subagent with this instruction (substitute the real `KEY-N`):
 
 > You are a Kando worker. Work ONLY ticket **KEY-N**. Follow the `kando` skill's record-then-code gate AND the `test-driven-development` skill. Steps:
-> 1. **Tag `claude` FIRST — before anything else.** `ensure_tag <board> claude`, then `update_ticket KEY-N` to apply its id (keep any tags the ticket already has), so the board shows it's being worked.
-> 2. `get_ticket KEY-N`. Assign the ticket to `<userSub>`, move it to the `<in-progress column>` column, and append a `## 🤖 Claude — Plan` section (preserve the original body). **Do NOT call `get_board`** — the coordinator has already given you every board value you need. **If the body has a `## 📋 Specification` section, that is the authoritative spec — build to it (do not re-derive intent from the title).**
+> 1. **Tag `claude` FIRST — before anything else.** `ensure_tag <board> claude`, then `update_ticket KEY-N` with `tags` = its current tag **names** plus `claude` (keep any tags the ticket already has), so the board shows it's being worked.
+> 2. `get_ticket KEY-N`. Assign the ticket to `me` (the server resolves it to the bot), move it to the `<in-progress column>` column, and append a `## 🤖 Claude — Plan` section (preserve the original body). **Do NOT call `get_board`** — the coordinator has already given you every board value you need. **If the body has a `## 📋 Specification` section, that is the authoritative spec — build to it (do not re-derive intent from the title).**
 > 3. **TDD — write failing test(s) FIRST (RED).** Before any implementation, add test(s) covering the ticket's intended behavior using the repo's **existing** test suites/frameworks (match their patterns; do not invent a parallel harness). Run them and confirm they **fail for the right reason**. If a `## 📋 Specification` section exists, write these tests against its **Acceptance criteria**. *Exemption:* only if the change has genuinely no testable runtime surface (pure docs/config) — state that and why in the Plan section; the reviewer will verify it.
 > 4. **Implement to green (GREEN).** Minimal code to make those tests pass; then run the full suite (and build, if any) and confirm it is green.
 > 5. **Commit LOCALLY — do NOT push.** You are on the run's `kando-loop/<run-id>` branch; stay on it and never switch. Append a `## 🤖 Claude — Done` section. `git commit`. Then **report `ready-for-review`** and STOP — do not push. The coordinator will have an independent reviewer look at your diff.

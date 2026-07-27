@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { KandoError, type GqlClient } from '../graphql.js';
 import { MY_BOARDS, GET_BOARD, ARCHIVED_ITEMS } from '../operations.js';
 import { flattenBoard, filterItems, resolveTicketRef } from '../tickets.js';
+import { buildContext, leanItem, leanDetail } from '../shape.js';
+import { resolveTagIds, resolveReleaseId, resolveAssignee } from '../resolve.js';
 
 export type Gql = GqlClient;
 
@@ -16,8 +18,9 @@ export interface ToolHost {
   ): unknown;
 }
 
+/** Compact on purpose: the 2-space indent was ~26% of every response. */
 export function toolText(value: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
+  return { content: [{ type: 'text' as const, text: JSON.stringify(value) }] };
 }
 
 const KEY_RE = /^[A-Z]{1,10}$/;
@@ -50,7 +53,7 @@ export function selectBoardFields<T extends Record<string, unknown>>(
   return out;
 }
 
-export function registerReadTools(server: ToolHost, gql: Gql) {
+export function registerReadTools(server: ToolHost, gql: Gql, botEmail: string | null = null) {
   server.registerTool(
     'list_boards',
     { description: 'List the Kando boards the bot can see (call this first).', inputSchema: {} },
@@ -70,36 +73,41 @@ export function registerReadTools(server: ToolHost, gql: Gql) {
   server.registerTool(
     'get_board',
     {
-      description: 'Get a board with its columns, non-archived tickets, tags, releases and members.',
+      description:
+        'Get a board: columns, non-archived tickets, tags, releases and members. ' +
+        'Tickets come back as identifiers only (KEY-N, title, column, tags, assignee) — ' +
+        "NO bodies. Use get_ticket for a ticket's description or spec.",
       inputSchema: {
         board: z.string().describe('board key (e.g. TSK) or id'),
         fields: z
           .array(z.enum(['board', 'items', 'tags', 'releases', 'members']))
           .optional()
-          .describe('sections to return; omit for all. Use ["board","members"] for just columns + userSubs.'),
+          .describe('sections to return; omit for all. Use ["board"] for just the column names.'),
       },
     },
     async ({ board, fields }) => {
       const boardId = await resolveBoardId(gql, board);
       const data = await gql(GET_BOARD, { boardId });
       const bc = data.getBoard;
+      const ctx = buildContext(bc);
       return toolText(selectBoardFields({
         board: {
-          id: bc.board.id,
           key: bc.board.key,
           name: bc.board.name,
           role: bc.board.role,
-          columns: [...(bc.board.columns ?? [])].sort((a: any, c: any) => a.order - c.order),
+          columns: [...(bc.board.columns ?? [])]
+            .sort((a: any, c: any) => a.order - c.order)
+            .map((c: any) => c.label),
         },
-        items: flattenBoard(bc),
-        tags: bc.tags,
-        releases: bc.releases,
-        members: (bc.members ?? []).map((m: any) => ({
-          userSub: m.userSub,
-          email: m.email,
-          displayName: m.displayName,
-          role: m.role,
-        })),
+        items: flattenBoard(bc).map((i) => leanItem(i, ctx)),
+        tags: (bc.tags ?? []).map((t: any) => t.name),
+        releases: (bc.releases ?? []).map((r: any) => ({ name: r.name, targetDate: r.targetDate })),
+        members: (bc.members ?? []).map((m: any) => {
+          const o: Record<string, unknown> = { email: m.email };
+          if (m.displayName) o.name = m.displayName;
+          o.role = m.role;
+          return o;
+        }),
       }, fields));
     },
   );
@@ -107,42 +115,72 @@ export function registerReadTools(server: ToolHost, gql: Gql) {
   server.registerTool(
     'get_ticket',
     {
-      description: 'Get full detail for one ticket by KEY-N.',
+      description:
+        'Get full detail for one ticket by KEY-N, INCLUDING its body — the only tool that ' +
+        "returns one. A container story also lists its subtasks, without their bodies.",
       inputSchema: { ticket: z.string().describe('ticket id, e.g. TSK-42') },
     },
     async ({ ticket }) => {
       const ref = await resolveTicketRef(gql, ticket);
       const data = await gql(GET_BOARD, { boardId: ref.boardId });
       const bc = data.getBoard;
-      if (ref.subtaskId) {
-        const parent = (bc.stories ?? []).find((s: any) => s.id === ref.storyId);
-        const sub = (parent?.subtasks ?? []).find((x: any) => x.id === ref.subtaskId);
-        if (!sub) throw new KandoError('That subtask no longer exists.', 'NOT_FOUND');
-        return toolText({ kind: 'subtask', parentStoryId: ref.storyId, ...sub });
-      }
+      const ctx = buildContext(bc);
+      const labelOf = new Map<string, string>(
+        (bc.board?.columns ?? []).map((c: any) => [c.id, c.label]),
+      );
       const story = (bc.stories ?? []).find((s: any) => s.id === ref.storyId);
       if (!story) throw new KandoError('That story no longer exists.', 'NOT_FOUND');
-      return toolText({ kind: 'story', ...story });
+      if (ref.subtaskId) {
+        const sub = (story.subtasks ?? []).find((x: any) => x.id === ref.subtaskId);
+        if (!sub) throw new KandoError('That subtask no longer exists.', 'NOT_FOUND');
+        return toolText(leanDetail(sub, ctx, {
+          kind: 'subtask',
+          ticket: ctx.ticketOf.get(sub.id) ?? null,
+          columnLabel: labelOf.get(sub.columnId) ?? sub.columnId,
+          parent: ctx.ticketOf.get(story.id),
+        }));
+      }
+      // Reuse flattenBoard so the subtask list obeys the same archived rules as
+      // every other list, then keep only this story's children.
+      const subs = flattenBoard(bc).filter((i) => i.storyId === story.id);
+      return toolText(leanDetail(story, ctx, {
+        kind: 'story',
+        ticket: ctx.ticketOf.get(story.id) ?? null,
+        columnLabel: labelOf.get(story.columnId) ?? story.columnId,
+        subtasks: subs.length ? subs : undefined,
+      }));
     },
   );
 
   server.registerTool(
     'search_tickets',
     {
-      description: "Search a board's non-archived tickets. Filters combine with AND.",
+      description:
+        "Search a board's non-archived tickets. Filters combine with AND. Returns " +
+        'identifiers only — use get_ticket for a body (text still searches bodies).',
       inputSchema: {
         board: z.string().describe('board key or id'),
         column: z.string().optional().describe('column label or id'),
-        assignee: z.string().optional().describe('member userSub'),
-        tag: z.string().optional().describe('tag id'),
-        release: z.string().optional().describe('release id'),
+        assignee: z.string().optional().describe('member email, userSub, or "me"'),
+        tag: z.string().optional().describe('tag name or id'),
+        release: z.string().optional().describe('release name or id'),
         text: z.string().optional().describe('matches title + description'),
       },
     },
     async ({ board, ...f }) => {
       const boardId = await resolveBoardId(gql, board);
       const data = await gql(GET_BOARD, { boardId });
-      return toolText(filterItems(flattenBoard(data.getBoard), f));
+      const bc = data.getBoard;
+      const ctx = buildContext(bc);
+      // The filters still run against the FULL items — `text` matches bodies
+      // server-side — but only the lean projection goes back over the wire.
+      const filters = {
+        ...f,
+        ...(f.tag ? { tag: resolveTagIds(bc, [f.tag])[0] } : {}),
+        ...(f.release ? { release: resolveReleaseId(bc, f.release) } : {}),
+        ...(f.assignee ? { assignee: resolveAssignee(bc, f.assignee, botEmail) } : {}),
+      };
+      return toolText(filterItems(flattenBoard(bc), filters).map((i) => leanItem(i, ctx)));
     },
   );
 
@@ -154,8 +192,34 @@ export function registerReadTools(server: ToolHost, gql: Gql) {
     },
     async ({ board }) => {
       const boardId = await resolveBoardId(gql, board);
-      const data = await gql(ARCHIVED_ITEMS, { boardId });
-      return toolText(data.archivedItems);
+      const [archived, boardData] = await Promise.all([
+        gql(ARCHIVED_ITEMS, { boardId }),
+        gql(GET_BOARD, { boardId }),
+      ]);
+      const bc = boardData.getBoard;
+      const ctx = buildContext(bc);
+      const labelOf = new Map<string, string>(
+        (bc.board?.columns ?? []).map((c: any) => [c.id, c.label]),
+      );
+      const key: string | null = bc.board?.key ?? null;
+      return toolText((archived.archivedItems ?? []).map((a: any) => {
+        const raw = a.story ?? a.subtask;
+        const lean = leanItem({
+          kind: a.story ? 'story' : 'subtask',
+          id: raw.id,
+          storyId: a.subtask ? raw.storyId : undefined,
+          ticket: key && typeof raw.num === 'number' ? `${key}-${raw.num}` : null,
+          title: raw.title,
+          columnId: raw.columnId,
+          columnLabel: labelOf.get(raw.columnId) ?? raw.columnId,
+          assignee: raw.assignee ?? null,
+          tags: raw.tags ?? [],
+          releaseId: raw.releaseId ?? null,
+          snoozed: false,
+          body: null,
+        }, ctx);
+        return { ...lean, archivedAt: a.archivedAt };
+      }));
     },
   );
 }
