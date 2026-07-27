@@ -23,6 +23,12 @@ implement. They exist so an unknown does not become a `human-needed` escalation 
 for that is high, and "I could not look it up" is not on the list. Use them to answer a
 specific question, not to browse.
 
+Run long commands in the **foreground**. Never `run_in_background` a test suite, build,
+install, or e2e run. Ending your turn is terminal for you, and a background job's
+completion notification goes to the coordinator that dispatched you — never to you. Wait
+on one and you stop before committing, leaving the work stranded and the loop to recover
+it. If a command would outlast the foreground timeout, narrow its scope and say so.
+
 The dispatching prompt carries the full working contract: the record-then-code gate, the
 TDD cycle, the review handoff, and what to report each turn. Follow it exactly, and
 follow the `kando` and `test-driven-development` skills it names.
