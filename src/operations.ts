@@ -144,3 +144,30 @@ export const DELETE_RELEASE = `
   mutation ($boardId: ID!, $releaseId: ID!) {
     deleteRelease(boardId: $boardId, releaseId: $releaseId) { boardId kind deletedId }
   }`;
+
+const commentFields = `id author text createdAt editedAt`;
+
+export const COMMENTS = `
+  query Comments($boardId: ID!, $itemId: ID!) {
+    comments(boardId: $boardId, itemId: $itemId) { ${commentFields} }
+  }`;
+
+// The mutations return only the key, never the body they were just handed:
+// `addComment` yields the id the server assigned, `deleteComment` the id it
+// removed. Enough to acknowledge precisely, nothing fetched to be discarded.
+export const ADD_COMMENT = `
+  mutation ($boardId: ID!, $itemId: ID!, $text: String!) {
+    addComment(boardId: $boardId, itemId: $itemId, text: $text) { comment { id } }
+  }`;
+
+export const EDIT_COMMENT = `
+  mutation ($boardId: ID!, $itemId: ID!, $commentId: ID!, $text: String!) {
+    editComment(boardId: $boardId, itemId: $itemId, commentId: $commentId, text: $text) {
+      comment { id }
+    }
+  }`;
+
+export const DELETE_COMMENT = `
+  mutation ($boardId: ID!, $itemId: ID!, $commentId: ID!) {
+    deleteComment(boardId: $boardId, itemId: $itemId, commentId: $commentId) { deletedId }
+  }`;
