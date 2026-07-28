@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { parseTicketId, resolveTicketRef, flattenBoard, filterItems } from './tickets.js';
+import { parseTicketId, parseCommentKey, resolveTicketRef, flattenBoard, filterItems } from './tickets.js';
 
 describe('parseTicketId', () => {
   it('parses KEY-N', () => {
@@ -9,6 +9,32 @@ describe('parseTicketId', () => {
   it('rejects garbage', () => {
     expect(() => parseTicketId('nope')).toThrow();
     expect(() => parseTicketId('TSK-')).toThrow();
+  });
+});
+
+describe('parseCommentKey', () => {
+  it('splits a comment key into its ticket and the full key', () => {
+    expect(parseCommentKey('KDO-34-3')).toEqual({ ticket: 'KDO-34', commentId: 'KDO-34-3' });
+  });
+
+  it('uppercases the board key so lowercase input still addresses the right comment', () => {
+    expect(parseCommentKey('kdo-34-3')).toEqual({ ticket: 'KDO-34', commentId: 'KDO-34-3' });
+  });
+
+  it('trims surrounding whitespace', () => {
+    expect(parseCommentKey('  KDO-34-3  ')).toEqual({ ticket: 'KDO-34', commentId: 'KDO-34-3' });
+  });
+
+  it('rejects a plain ticket id, naming the expected shape', () => {
+    expect(() => parseCommentKey('KDO-34')).toThrow(/Not a comment key.*KEY-N-M/s);
+  });
+
+  it('rejects a non-numeric ordinal', () => {
+    expect(() => parseCommentKey('KDO-34-x')).toThrow(/Not a comment key/);
+  });
+
+  it('rejects a key with no board key', () => {
+    expect(() => parseCommentKey('34-1')).toThrow(/Not a comment key/);
   });
 });
 

@@ -9,6 +9,25 @@ export function parseTicketId(input: string): { key: string; num: number } {
   return { key: m[1].toUpperCase(), num: Number(m[2]) };
 }
 
+/**
+ * A comment's id IS its key: `KDO-34-3` is the third comment on `KDO-34`. The
+ * ordinal is a persisted, monotonic per-item counter — a delete neither renumbers
+ * the comments after it nor frees the number — so the key addresses one comment
+ * for the life of the ticket. That is what lets the write tools pass it straight
+ * through as `commentId` instead of fetching the list to translate a position.
+ */
+export function parseCommentKey(input: string): { ticket: string; commentId: string } {
+  const m = input.trim().match(/^([A-Za-z]{1,10})-(\d+)-(\d+)$/);
+  if (!m) {
+    throw new KandoError(
+      `Not a comment key: "${input}". Expected KEY-N-M, e.g. KDO-34-3.`,
+      'BAD_INPUT',
+    );
+  }
+  const ticket = `${m[1].toUpperCase()}-${m[2]}`;
+  return { ticket, commentId: `${ticket}-${m[3]}` };
+}
+
 export type TicketRef = { boardId: string; storyId?: string; subtaskId?: string };
 
 export async function resolveTicketRef(gql: GqlClient, input: string): Promise<TicketRef> {
