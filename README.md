@@ -51,6 +51,7 @@ Access is **per board**. The account you log in as only sees boards it is a memb
 
 - **Read:** `list_boards`, `get_board`, `get_ticket`, `search_tickets`, `list_archived`
 - **Tickets:** `create_story`, `create_subtask`, `update_ticket`, `move_ticket`, `reorder_ticket`, `archive_ticket`, `unarchive_ticket`, `delete_ticket`
+- **Comments:** `list_comments`, `add_comment`, `edit_comment`, `delete_comment`
 - **Tags:** `create_tag`, `update_tag`, `delete_tag`
 - **Releases:** `create_release`, `update_release`, `delete_release`
 - **Loop:** `next_task`, `ensure_tag`
@@ -67,6 +68,19 @@ Nothing needs a UUID: columns, tags, releases and members are addressed by **lab
 name and email**, plus `"me"` for the account you logged in as.
 
 Boards are addressed by **key** (e.g. `TSK`); tickets by **`KEY-N`** (e.g. `TSK-42`). `move_ticket` changes a ticket's column (status); `reorder_ticket` changes its priority within its peer group — they're separate on purpose, so neither wipes the other.
+
+Comments follow the same rule: **`TSK-42-3` is the third comment on `TSK-42`**, and that
+key is all `edit_comment` and `delete_comment` need — no separate ticket argument. The
+ordinal is never reused, so deleting `TSK-42-3` leaves a gap rather than renumbering the
+comments after it, and a key you read stays valid.
+
+`get_ticket` inlines a ticket's **10 most recent** comments — its own only, never a
+subtask's — and reports `earlierComments` when there are more. `list_comments` returns
+all of them.
+
+The bundled `kando` skill treats the two as different things: **the body is the human's
+spec, comments are the agent's record.** Claude posts its plan, its review findings and
+what it changed as comments, and leaves the description you wrote alone.
 
 ## Pinning
 

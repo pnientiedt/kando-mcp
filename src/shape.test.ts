@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildContext, leanItem, leanDetail, ack } from './shape.js';
+import { buildContext, leanItem, leanDetail, leanComments, ack } from './shape.js';
 import type { FlatItem } from './tickets.js';
 
 /** A board container shaped like getBoard's payload. Shared with resolve.test.ts. */
@@ -165,5 +165,83 @@ describe('leanDetail', () => {
     });
     expect(d.visibleAt).toBe('2099-01-01T00:00:00Z');
     expect(d.parent).toBe('KDO-1');
+  });
+});
+
+describe('leanComments', () => {
+  const ctx = buildContext({
+    board: { key: 'KDO', columns: [] },
+    stories: [],
+    tags: [],
+    releases: [],
+    members: [{ userSub: 'u1', email: 'bot@example.com' }],
+  });
+
+  const c = (id: string, over: Record<string, unknown> = {}) => ({
+    id,
+    author: 'u1',
+    text: `text ${id}`,
+    createdAt: '2026-07-28T10:00:00.000Z',
+    editedAt: null,
+    ...over,
+  });
+
+  it('renders a comment with its key, author email, timestamp and text', () => {
+    const { comments, earlier } = leanComments([c('KDO-34-1')], ctx);
+    expect(earlier).toBe(0);
+    expect(comments).toEqual([
+      {
+        comment: 'KDO-34-1',
+        author: 'bot@example.com',
+        at: '2026-07-28T10:00:00.000Z',
+        text: 'text KDO-34-1',
+      },
+    ]);
+  });
+
+  it('falls back to the raw sub when the author is not a board member', () => {
+    const { comments } = leanComments([c('KDO-34-1', { author: 'ghost' })], ctx);
+    expect(comments[0].author).toBe('ghost');
+  });
+
+  it('marks an edited comment and omits the flag otherwise', () => {
+    const { comments } = leanComments(
+      [c('KDO-34-1'), c('KDO-34-2', { editedAt: '2026-07-28T11:00:00.000Z' })],
+      ctx,
+    );
+    expect(comments[0]).not.toHaveProperty('edited');
+    expect(comments[1].edited).toBe(true);
+  });
+
+  it('returns nothing for a ticket with no comments', () => {
+    expect(leanComments([], ctx)).toEqual({ comments: [], earlier: 0 });
+  });
+
+  it('is uncapped when no cap is given', () => {
+    const raw = Array.from({ length: 25 }, (_, i) => c(`KDO-34-${i + 1}`));
+    const { comments, earlier } = leanComments(raw, ctx);
+    expect(comments).toHaveLength(25);
+    expect(earlier).toBe(0);
+  });
+
+  it('keeps the last N in oldest-first order and reports how many it dropped', () => {
+    const raw = Array.from({ length: 11 }, (_, i) => c(`KDO-34-${i + 1}`));
+    const { comments, earlier } = leanComments(raw, ctx, 10);
+    expect(earlier).toBe(1);
+    expect(comments).toHaveLength(10);
+    expect(comments[0].comment).toBe('KDO-34-2');
+    expect(comments[9].comment).toBe('KDO-34-11');
+  });
+
+  it('drops nothing when the count equals the cap', () => {
+    const raw = Array.from({ length: 10 }, (_, i) => c(`KDO-34-${i + 1}`));
+    const { comments, earlier } = leanComments(raw, ctx, 10);
+    expect(comments).toHaveLength(10);
+    expect(earlier).toBe(0);
+  });
+
+  it('renders keys with gaps as-is and never renumbers them', () => {
+    const { comments } = leanComments([c('KDO-34-1'), c('KDO-34-4'), c('KDO-34-5')], ctx);
+    expect(comments.map((x) => x.comment)).toEqual(['KDO-34-1', 'KDO-34-4', 'KDO-34-5']);
   });
 });

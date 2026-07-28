@@ -97,7 +97,7 @@ fetch per interruption — still far below one per worker.
    - Add `KEY-N` to this run's **batch list** and restate that list in your run header.
    - The **tag**, not the list, is the durable record. `next_task` skips a `pending-ship` ticket — the only reason the loop can advance past its own finished work — and if this session dies, the board still shows exactly what is parked on the branch.
 6. Read the worker's final report and **verify** it via `get_ticket`:
-   - `pushed` → the ticket MUST carry `claude` + `pending-ship`, sit in the in-progress column, and have `## 🤖 Claude — Plan` and `## 🤖 Claude — Done` sections. It is **not** Done — you set that at the flush.
+   - `pushed` → the ticket MUST carry `claude` + `pending-ship`, sit in the in-progress column, and carry a `plan` comment and a `done` comment (`get_ticket` inlines them). It is **not** Done — you set that at the flush.
    - `blocked` → the ticket MUST carry `claude` + `human-needed`. Count it toward the circuit breaker.
 7. **Decide whether to flush**, then loop back to step 1 for the **same target**. Call `next_task(target)` here and carry its result into step 1 — one call, used for both.
 
@@ -156,8 +156,8 @@ silently; do not construct an empty merge commit.
    batch, you do the board writes yourself:
    - `update_ticket` to **remove `pending-ship`** (keep `claude` and everything else);
    - `move_ticket` to the **last column**;
-   - write the **deep link** — the `main` commit URL, plus the pipeline run URL — into
-     its `## 🤖 Claude — Done` section.
+   - `add_comment` the **deep link** — the `main` commit URL, plus the pipeline run URL
+     — opening the comment with `shipped`.
 
    Then `git checkout kando-loop/<run-id> && git merge --ff-only main` to carry the
    branch forward, clear the batch list, and continue.
@@ -195,7 +195,7 @@ exhaustion:
 
 - `git revert -m 1 <merge-sha>` and push — `main` and production return to the last
   green state. The loop branch keeps every commit, so nothing is lost, only unshipped.
-- Write a `## 🤖 Claude — Blocked` section on **every** ticket in the batch, naming the
+- `add_comment` a `blocked` comment on **every** ticket in the batch, naming the
   red run and what both fixers tried.
 - **Stop the loop**, reporting the merge sha, the run URL, the revert sha, the batch's
   tickets, and both fixer attempts.
@@ -256,13 +256,13 @@ Dispatch a general-purpose subagent with this instruction (substitute the real `
 
 > You are a Kando worker. Work ONLY ticket **KEY-N**. Follow the `kando` skill's record-then-code gate AND the `test-driven-development` skill. Steps:
 > 1. **Tag `claude` FIRST — before anything else.** `ensure_tag <board> claude`, then `update_ticket KEY-N` with `tags` = its current tag **names** plus `claude` (keep any tags the ticket already has), so the board shows it's being worked.
-> 2. `get_ticket KEY-N`. Assign the ticket to `me` (the server resolves it to the bot), move it to the `<in-progress column>` column, and append a `## 🤖 Claude — Plan` section (preserve the original body). **Do NOT call `get_board`** — the coordinator has already given you every board value you need. **If the body has a `## 📋 Specification` section, that is the authoritative spec — build to it (do not re-derive intent from the title).**
-> 3. **TDD — write failing test(s) FIRST (RED).** Before any implementation, add test(s) covering the ticket's intended behavior using the repo's **existing** test suites/frameworks (match their patterns; do not invent a parallel harness). Run them and confirm they **fail for the right reason**. If a `## 📋 Specification` section exists, write these tests against its **Acceptance criteria**. *Exemption:* only if the change has genuinely no testable runtime surface (pure docs/config) — state that and why in the Plan section; the reviewer will verify it.
+> 2. `get_ticket KEY-N`. Assign the ticket to `me` (the server resolves it to the bot), move it to the `<in-progress column>` column, and post your plan with `add_comment KEY-N` opening with `plan` — **leave the body alone**, it is the human's spec. **Do NOT call `get_board`** — the coordinator has already given you every board value you need. **If the body has a `## 📋 Specification` section, that is the authoritative spec — build to it (do not re-derive intent from the title).**
+> 3. **TDD — write failing test(s) FIRST (RED).** Before any implementation, add test(s) covering the ticket's intended behavior using the repo's **existing** test suites/frameworks (match their patterns; do not invent a parallel harness). Run them and confirm they **fail for the right reason**. If a `## 📋 Specification` section exists, write these tests against its **Acceptance criteria**. *Exemption:* only if the change has genuinely no testable runtime surface (pure docs/config) — state that and why in your `plan` comment; the reviewer will verify it.
 > 4. **Implement to green (GREEN).** Minimal code to make those tests pass; then run the full suite (and build, if any) and confirm it is green.
-> 5. **Commit LOCALLY — do NOT push.** You are on the run's `kando-loop/<run-id>` branch; stay on it and never switch. Append a `## 🤖 Claude — Done` section. `git commit`. Then **report `ready-for-review`** and STOP — do not push. The coordinator will have an independent reviewer look at your diff.
+> 5. **Commit LOCALLY — do NOT push.** You are on the run's `kando-loop/<run-id>` branch; stay on it and never switch. `add_comment KEY-N` opening with `done`, saying what you changed and where. `git commit`. Then **report `ready-for-review`** and STOP — do not push. The coordinator will have an independent reviewer look at your diff.
 > 6. **When the coordinator sends review findings:** fix every BLOCKING one, keep the suite green, `git commit`, and report `ready-for-review` again. (Apply low-risk ADVISORY suggestions too, or note them in the Done section.)
 > 7. **When the coordinator says `review passed — push the branch`:** push the run's loop branch `kando-loop/<run-id>` — the branch you are already on. **Never push `main`, never merge into `main`, and never open a PR.** Running `/kando-loop` authorizes this push; do NOT stop to ask. Then report **`pushed`** with the commit sha and STOP. The coordinator decides when your ticket's batch ships and owns every pipeline wait: **do not watch a pipeline, and do not move the ticket to the last column** — it is not Done until the batch is verified green on `main`, and the coordinator records that itself.
-> 8. **When the coordinator says `block it`:** `ensure_tag <board> human-needed`, apply it (keep `claude`), append a `## 🤖 Claude — Blocked` section with the outstanding findings and what you tried, leave the ticket un-shipped, report **`blocked`**.
+> 8. **When the coordinator says `block it`:** `ensure_tag <board> human-needed`, apply it (keep `claude`), `add_comment KEY-N` opening with `blocked`, giving the outstanding findings and what you tried, leave the ticket un-shipped, report **`blocked`**.
 > **Run long commands in the FOREGROUND — never `run_in_background`.** Test suite, build, install, e2e run: sit through it. You are a subagent, so ending your turn is *terminal*, and a background job's completion notification is delivered to the **coordinator**, not to you — park yourself waiting for one and you stop before committing, stranding the work. If a command would outlast the foreground timeout, narrow it (one suite, one spec) and say so; do not background it. The "never block in your own foreground" rule elsewhere in this skill is addressed to the coordinator and does **not** apply to you.
 > Report exactly one word each turn — `ready-for-review`, `pushed`, or `blocked` — with a one-line reason. There is no `done` for you to report: only the coordinator can mark a ticket Done, and only after its batch is green on `main`. Never push before the coordinator says the review passed.
 
@@ -270,12 +270,13 @@ Dispatch a general-purpose subagent with this instruction (substitute the real `
 
 Dispatch a FRESH general-purpose subagent (it did NOT write this code) with:
 
-> You are an INDEPENDENT code reviewer for Kando ticket **KEY-N**. You did not write this change; do not trust any implementer narrative. You are given the ticket **intent** (title/body/Plan) and a **diff range**. **Run `git diff <base-sha>..HEAD` yourself** — that is the complete change under review. Review the diff directly and sort findings into two buckets and report both. (Do NOT try to invoke the `/code-review` skill — it can't be called by a subagent; apply code-review principles yourself.)
+> You are an INDEPENDENT code reviewer for Kando ticket **KEY-N**. You did not write this change; do not trust any implementer narrative. You are given the ticket **intent** (title/body/`plan` comment) and a **diff range**. **Run `git diff <base-sha>..HEAD` yourself** — that is the complete change under review. Review the diff directly and sort findings into two buckets and report both. (Do NOT try to invoke the `/code-review` skill — it can't be called by a subagent; apply code-review principles yourself.)
 > - **BLOCKING** (must be fixed before this ships):
 >   - **correctness** — real bugs, logic errors, unhandled edge cases in the diff;
 >   - **adherence** — the change does not actually do what the ticket asked, or cuts corners; OR the tests are trivial / gamed / do not exercise the change / were clearly not written test-first; OR the change claims a "no testable surface" TDD exemption but a testable surface plainly exists.
 > - **ADVISORY** (do NOT block): quality — simplification, reuse, efficiency, style.
 > Be strict on adherence and test quality — catching shallow work is the entire point of this gate. Output the BLOCKING list (empty if clean) and the ADVISORY list, each finding one line with `file:line`.
+> **Then post the same findings to the board:** `add_comment KEY-N`, opening the comment with `review · pass N`. Do this on **every** pass, including one that is clean — a ticket with no review comment must mean "not reviewed", never "reviewed and fine". You write them yourself so they cannot be softened in transit. `add_comment` is the only board tool you may use: do not move, tag, update or close anything, and never edit or delete a comment, including your own.
 
 ## The `human-needed` bar is HIGH — solve it yourself first
 

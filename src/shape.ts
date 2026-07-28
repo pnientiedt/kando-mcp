@@ -94,6 +94,44 @@ export function leanDetail(raw: any, ctx: BoardCtx, o: DetailOpts): Record<strin
   return out;
 }
 
+/** How many comments `get_ticket` inlines. `list_comments` is never capped. */
+export const COMMENT_CAP = 10;
+
+export type LeanComment = {
+  comment: string;
+  author: string;
+  at: string;
+  edited?: true;
+  text: string;
+};
+
+/**
+ * Comments oldest-first, each carrying its key — the handle the write tools take.
+ * A capped view keeps the MOST RECENT `cap`, because the tail is what a worker
+ * needs; `earlier` says how many it did not show so the caller knows to reach for
+ * `list_comments`. Truncating is safe only because the key is absolute: a comment
+ * has the same handle here as it does in the uncapped list.
+ */
+export function leanComments(
+  raw: any[],
+  ctx: BoardCtx,
+  cap?: number,
+): { comments: LeanComment[]; earlier: number } {
+  const all = raw ?? [];
+  const kept = cap != null && all.length > cap ? all.slice(-cap) : all;
+  const comments = kept.map((c: any) => {
+    const out: LeanComment = {
+      comment: c.id,
+      author: ctx.memberEmail.get(c.author) ?? c.author,
+      at: c.createdAt,
+      text: c.text,
+    };
+    if (c.editedAt) out.edited = true;
+    return out;
+  });
+  return { comments, earlier: all.length - kept.length };
+}
+
 /** A mutation confirmation: the ticket plus only what changed. */
 export function ack(ticket: string, changed: Record<string, unknown>) {
   return { ticket, ...changed };

@@ -12,10 +12,12 @@ describe('shouldReanchor', () => {
 
 it('the shipped hook asset embeds the gate text', () => {
   const asset = readFileSync(new URL('../assets/kando-workflow.mjs', import.meta.url), 'utf8');
-  const lines = GATE_TEXT.split('\n');
-  // Guard on backtick-free lines: the raw asset escapes backticks (\`) while the
-  // GATE_TEXT runtime value has literal ones, so lines with backticks won't
-  // string-match. These two frame the gate body and catch any drift.
-  expect(asset).toContain(lines[1]); // "If this task corresponds to a Kando ticket KEY-N, …"
-  expect(asset).toContain(lines[lines.length - 1]); // "A skill loaded for a previous ticket …"
+  // EVERY backtick-free line, not just the framing pair. Checking only the first
+  // and last let the whole middle of the gate — the actual instructions — drift
+  // out of sync unnoticed when the body-append steps became comment steps.
+  // Lines containing backticks are skipped because the raw asset escapes them
+  // (\`) while the GATE_TEXT runtime value has literal ones.
+  const guarded = GATE_TEXT.split('\n').filter((l) => !l.includes('`'));
+  expect(guarded.length).toBeGreaterThan(4);
+  for (const line of guarded) expect(asset).toContain(line);
 });

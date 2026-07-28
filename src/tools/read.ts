@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { KandoError, type GqlClient } from '../graphql.js';
-import { MY_BOARDS, GET_BOARD, ARCHIVED_ITEMS } from '../operations.js';
+import { MY_BOARDS, GET_BOARD, ARCHIVED_ITEMS, COMMENTS } from '../operations.js';
 import { flattenBoard, filterItems, resolveTicketRef } from '../tickets.js';
-import { buildContext, leanItem, leanDetail } from '../shape.js';
+import { buildContext, leanItem, leanDetail, leanComments, COMMENT_CAP } from '../shape.js';
 import { resolveTagIds, resolveReleaseId, resolveAssignee } from '../resolve.js';
 
 export type Gql = GqlClient;
@@ -117,38 +117,54 @@ export function registerReadTools(server: ToolHost, gql: Gql, botEmail: string |
     {
       description:
         'Get full detail for one ticket by KEY-N, INCLUDING its body — the only tool that ' +
-        "returns one. A container story also lists its subtasks, without their bodies.",
+        'returns one. A container story also lists its subtasks, without their bodies. ' +
+        `Inlines the ${COMMENT_CAP} most recent comments (its own only, never a subtask's); ` +
+        'use list_comments for the rest.',
       inputSchema: { ticket: z.string().describe('ticket id, e.g. TSK-42') },
     },
     async ({ ticket }) => {
       const ref = await resolveTicketRef(gql, ticket);
-      const data = await gql(GET_BOARD, { boardId: ref.boardId });
+      const itemId = ref.subtaskId ?? ref.storyId;
+      // The ref already names the item, so the comments read does not have to
+      // wait on the board read — only on the resolve that produced both ids.
+      const [data, cdata] = await Promise.all([
+        gql(GET_BOARD, { boardId: ref.boardId }),
+        gql(COMMENTS, { boardId: ref.boardId, itemId }),
+      ]);
       const bc = data.getBoard;
       const ctx = buildContext(bc);
       const labelOf = new Map<string, string>(
         (bc.board?.columns ?? []).map((c: any) => [c.id, c.label]),
       );
+      // Only THIS ticket's comments. A container lists its subtasks, never their
+      // discussion — one item id was asked about, one is answered.
+      const { comments, earlier } = leanComments(cdata.comments, ctx, COMMENT_CAP);
+      const withComments = (out: Record<string, unknown>) => {
+        if (comments.length) out.comments = comments;
+        if (earlier) out.earlierComments = earlier;
+        return out;
+      };
       const story = (bc.stories ?? []).find((s: any) => s.id === ref.storyId);
       if (!story) throw new KandoError('That story no longer exists.', 'NOT_FOUND');
       if (ref.subtaskId) {
         const sub = (story.subtasks ?? []).find((x: any) => x.id === ref.subtaskId);
         if (!sub) throw new KandoError('That subtask no longer exists.', 'NOT_FOUND');
-        return toolText(leanDetail(sub, ctx, {
+        return toolText(withComments(leanDetail(sub, ctx, {
           kind: 'subtask',
           ticket: ctx.ticketOf.get(sub.id) ?? null,
           columnLabel: labelOf.get(sub.columnId) ?? sub.columnId,
           parent: ctx.ticketOf.get(story.id),
-        }));
+        })));
       }
       // Reuse flattenBoard so the subtask list obeys the same archived rules as
       // every other list, then keep only this story's children.
       const subs = flattenBoard(bc).filter((i) => i.storyId === story.id);
-      return toolText(leanDetail(story, ctx, {
+      return toolText(withComments(leanDetail(story, ctx, {
         kind: 'story',
         ticket: ctx.ticketOf.get(story.id) ?? null,
         columnLabel: labelOf.get(story.columnId) ?? story.columnId,
         subtasks: subs.length ? subs : undefined,
-      }));
+      })));
     },
   );
 
