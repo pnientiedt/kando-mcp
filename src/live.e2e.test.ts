@@ -4,6 +4,7 @@ import { resolveLiveConfig, PROD_POOL_ID } from './liveConfig.js';
 import { makeGqlClient, type GqlClient } from './graphql.js';
 import { registerReadTools, type ToolHost } from './tools/read.js';
 import { registerTicketTools } from './tools/tickets.js';
+import { registerCommentTools } from './tools/comments.js';
 
 /**
  * Live smoke test against a deployed Kando stage. Targets DEV by default and
@@ -36,7 +37,7 @@ describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
   let targetPoolId = '';
   let boardId = '';
   let boardKey = '';
-  let lastColumnId = '';
+  let lastColumnLabel = '';
   const tools: Record<string, (args: any) => Promise<any>> = {};
 
   beforeAll(async () => {
@@ -52,12 +53,13 @@ describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
     };
     registerReadTools(host, gql);
     registerTicketTools(host, gql);
+    registerCommentTools(host, gql);
 
     boardKey = randKey();
     const created = await gql(CREATE_BOARD, { name: `mcp-e2e ${boardKey}`, key: boardKey });
     boardId = created.createBoard.id;
     const cols = [...created.createBoard.columns].sort((a, b) => a.order - b.order);
-    lastColumnId = cols[cols.length - 1].id;
+    lastColumnLabel = cols[cols.length - 1].label;
   }, 30_000);
 
   afterAll(async () => {
@@ -91,27 +93,72 @@ describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
     const createRes = await tools.create_story({ board: boardKey, title: 'e2e smoke' });
     const story = JSON.parse(createRes.content[0].text);
     expect(story.title).toBe('e2e smoke');
-    const ticket = `${boardKey}-${story.num}`;
+    // v0.6.0 turned every mutation echo into an ack: create_story reports the
+    // ticket KEY-N directly and no longer carries a raw `num`.
+    const ticket: string = story.ticket;
+    expect(ticket).toMatch(/^[A-Z]+-\d+$/);
 
     // it shows up on the board
     const boardRes = await tools.get_board({ board: boardKey });
     const board = JSON.parse(boardRes.content[0].text);
     expect(board.items.some((i: any) => i.ticket === ticket)).toBe(true);
 
-    // move to the last column
-    const moveRes = await tools.move_ticket({ ticket, column: lastColumnId });
+    // move to the last column — the ack names the column by LABEL now, not id
+    const moveRes = await tools.move_ticket({ ticket, column: lastColumnLabel });
     const moved = JSON.parse(moveRes.content[0].text);
-    expect(moved.columnId).toBe(lastColumnId);
+    expect(moved).toEqual({ ticket, col: lastColumnLabel });
 
     // archive it, then confirm it's in the archive and off the board
     await tools.archive_ticket({ ticket });
     const archRes = await tools.list_archived({ board: boardKey });
     const archived = JSON.parse(archRes.content[0].text);
-    expect(archived.some((a: any) => a.story && a.story.num === story.num)).toBe(true);
+    expect(archived.some((a: any) => a.ticket === ticket || a.story?.ticket === ticket)).toBe(true);
 
     const afterRes = await tools.get_board({ board: boardKey });
     const after = JSON.parse(afterRes.content[0].text);
     expect(after.items.some((i: any) => i.ticket === ticket)).toBe(false);
+  }, 30_000);
+
+  // The claim the whole comment-addressing design rests on: the per-item ordinal
+  // is persisted and monotonic. A fake gql cannot prove that — only the backend
+  // can — so it is asserted here rather than assumed. If a delete ever starts
+  // renumbering, `edit_comment KEY-N-M` silently retargets and this test is what
+  // catches it.
+  it('adds, lists, edits and deletes comments — and never reuses an ordinal', async () => {
+    const created = JSON.parse(
+      (await tools.create_story({ board: boardKey, title: 'e2e comments' })).content[0].text,
+    );
+    const ticket: string = created.ticket;
+
+    const first = JSON.parse((await tools.add_comment({ ticket, text: 'one' })).content[0].text);
+    const second = JSON.parse((await tools.add_comment({ ticket, text: 'two' })).content[0].text);
+    expect(first.comment).toBe(`${ticket}-1`);
+    expect(second.comment).toBe(`${ticket}-2`);
+
+    const listed = JSON.parse((await tools.list_comments({ ticket })).content[0].text);
+    expect(listed.comments.map((c: any) => c.comment)).toEqual([`${ticket}-1`, `${ticket}-2`]);
+    expect(listed.comments[0].text).toBe('one');
+
+    const edited = JSON.parse(
+      (await tools.edit_comment({ comment: first.comment, text: 'one edited' })).content[0].text,
+    );
+    expect(edited).toEqual({ comment: `${ticket}-1`, edited: true });
+
+    const afterEdit = JSON.parse((await tools.list_comments({ ticket })).content[0].text);
+    expect(afterEdit.comments[0].text).toBe('one edited');
+    expect(afterEdit.comments[0].edited).toBe(true);
+
+    // Deleting -1 must neither renumber -2 nor free the number 1 for reuse.
+    await tools.delete_comment({ comment: first.comment });
+    const third = JSON.parse((await tools.add_comment({ ticket, text: 'three' })).content[0].text);
+    expect(third.comment).toBe(`${ticket}-3`);
+
+    const final = JSON.parse((await tools.list_comments({ ticket })).content[0].text);
+    expect(final.comments.map((c: any) => c.comment)).toEqual([`${ticket}-2`, `${ticket}-3`]);
+
+    // get_ticket carries the same comments inline.
+    const detail = JSON.parse((await tools.get_ticket({ ticket })).content[0].text);
+    expect(detail.comments.map((c: any) => c.comment)).toEqual([`${ticket}-2`, `${ticket}-3`]);
   }, 30_000);
 
   // The orphan this ticket exists for: a delete that drops the board but leaves
