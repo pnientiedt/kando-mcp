@@ -250,3 +250,117 @@ describe('tool descriptions state the new contract', () => {
     expect(configs.search_tickets.description).toMatch(/get_ticket/);
   });
 });
+
+describe('get_ticket comments', () => {
+  const board = (num = 34) => ({
+    getBoard: {
+      board: {
+        id: 'b1',
+        key: 'KDO',
+        name: 'Kando',
+        role: 'EDITOR',
+        columns: [{ id: 'open', label: 'Open', order: 0 }],
+      },
+      stories: [
+        {
+          id: 's1',
+          num,
+          title: 'Story',
+          body: 'the spec',
+          columnId: 'open',
+          tags: [],
+          assignee: null,
+          releaseId: null,
+          visibleAt: null,
+          archivedAt: null,
+          rank: 'a',
+          subtasks: [],
+        },
+      ],
+      tags: [],
+      releases: [],
+      members: [{ userSub: 'u1', email: 'bot@example.com', role: 'EDITOR' }],
+    },
+  });
+
+  const comment = (n: number) => ({
+    id: `KDO-34-${n}`,
+    author: 'u1',
+    text: `c${n}`,
+    createdAt: '2026-07-28T10:00:00.000Z',
+    editedAt: null,
+  });
+
+  /**
+   * One ordered timeline of `<call>:start` / `<call>:end` events. A single log is
+   * what makes overlap observable — comparing positions across two separate
+   * arrays says nothing about which happened first.
+   */
+  function ticketGql(comments: any[]) {
+    const log: string[] = [];
+    const gql = async (q: string) => {
+      const name = q.includes('resolveTicket')
+        ? 'resolve'
+        : q.includes('getBoard')
+          ? 'board'
+          : 'comments';
+      log.push(`${name}:start`);
+      await new Promise((r) => setTimeout(r, 0));
+      log.push(`${name}:end`);
+      if (name === 'resolve') return { resolveTicket: { boardId: 'b1', storyId: 's1' } };
+      if (name === 'board') return board();
+      return { comments };
+    };
+    return { gql, log };
+  }
+
+  const parseOut = (res: any) => JSON.parse(res.content[0].text);
+
+  it('inlines comments alongside the body', async () => {
+    const { gql } = ticketGql([comment(1)]);
+    const { host, tools } = captureHost();
+    registerReadTools(host, gql as never);
+    const out = parseOut(await tools.get_ticket({ ticket: 'KDO-34' }));
+    expect(out.body).toBe('the spec');
+    expect(out.comments).toEqual([
+      {
+        comment: 'KDO-34-1',
+        author: 'bot@example.com',
+        at: '2026-07-28T10:00:00.000Z',
+        text: 'c1',
+      },
+    ]);
+    expect(out).not.toHaveProperty('earlierComments');
+  });
+
+  it('omits both keys entirely when the ticket has no comments', async () => {
+    const { gql } = ticketGql([]);
+    const { host, tools } = captureHost();
+    registerReadTools(host, gql as never);
+    const out = parseOut(await tools.get_ticket({ ticket: 'KDO-34' }));
+    expect(out).not.toHaveProperty('comments');
+    expect(out).not.toHaveProperty('earlierComments');
+  });
+
+  it('inlines the last 10 and reports the rest as earlierComments', async () => {
+    const { gql } = ticketGql(Array.from({ length: 17 }, (_, i) => comment(i + 1)));
+    const { host, tools } = captureHost();
+    registerReadTools(host, gql as never);
+    const out = parseOut(await tools.get_ticket({ ticket: 'KDO-34' }));
+    expect(out.comments).toHaveLength(10);
+    expect(out.comments[0].comment).toBe('KDO-34-8');
+    expect(out.earlierComments).toBe(7);
+  });
+
+  it('fetches the board and the comments in parallel, not in series', async () => {
+    const { gql, log } = ticketGql([comment(1)]);
+    const { host, tools } = captureHost();
+    registerReadTools(host, gql as never);
+    await tools.get_ticket({ ticket: 'KDO-34' });
+    // The resolve must finish first — it produces the ids the other two need.
+    expect(log.slice(0, 2)).toEqual(['resolve:start', 'resolve:end']);
+    // The overlap: comments is in flight before the board read comes back.
+    // Serial execution would log board:end before comments:start.
+    expect(log.indexOf('comments:start')).toBeLessThan(log.indexOf('board:end'));
+  });
+});
