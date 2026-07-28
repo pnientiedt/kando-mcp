@@ -4,7 +4,30 @@ on:
     tags: ['v*']
 
 jobs:
+  # A release is the one moment cross-platform correctness genuinely matters —
+  # this package is installed via `npx` / `npm i -g` on whatever OS the user
+  # runs. Publishing used to be gated on ubuntu alone; it is now gated on all
+  # three OSes. This is where the macOS minutes that used to burn on every
+  # routine push have been moved to: rare, and actually load-bearing.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
   publish:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -14,6 +37,7 @@ jobs:
         with:
           node-version: 20
           registry-url: 'https://registry.npmjs.org'
+          cache: npm
       - run: npm ci
       - run: npm run typecheck
       - run: npm test

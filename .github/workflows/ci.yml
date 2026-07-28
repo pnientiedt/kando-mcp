@@ -3,19 +3,50 @@ on:
   push:
     branches: [main]
   pull_request:
+  # macOS coverage on demand — see the `cross-platform` job below.
+  workflow_dispatch:
 
 jobs:
+  # Every push and PR: Linux + Windows.
+  #
+  # Windows is NOT redundant here and must stay: `credStore.ts` deliberately
+  # branches on path flavour (`posix as posixPath, win32 as win32Path`), checks
+  # file permission modes, and `init.ts` writes client config to OS-specific
+  # locations. Separator handling and chmod being a near no-op on Windows are
+  # exactly the bugs only a Windows runner catches — and it bills at ×2.
+  #
+  # macOS is deliberately absent: it bills at ×10 while being a near-duplicate
+  # of the Linux leg for this codebase (both POSIX, same separators, same
+  # permission semantics, no native deps). On this account it was consuming
+  # ~8% of the monthly included minutes to re-prove what Linux already proved.
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  # macOS on demand (Actions → ci → "Run workflow"). Releases get it
+  # automatically: `publish.yml` gates publishing on all three OSes.
+  cross-platform:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
