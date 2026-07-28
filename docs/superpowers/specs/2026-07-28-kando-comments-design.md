@@ -92,12 +92,16 @@ This keeps v0.6.0's rule intact rather than carving out an exception. `KDO-34-3`
 same kind of handle as `KDO-34`: readable, stable, and typeable by a human reading the
 board. No UUID enters the read payload, and none has to be resolved.
 
-Because the key *is* the `commentId`, both writes are **single round trips** — no list
-fetch to translate a handle, and no window in which a concurrent delete retargets the
-mutation. The monotonic ordinal is what buys this: `KDO-34-3` addresses one comment for
-the life of the ticket, or nothing at all if it was deleted. There is no range check and
-no `was:` echo in the acks, because both existed only to bound a race that a stable key
-removes.
+Because the key *is* the `commentId`, no handle has to be translated. A write costs the
+ticket resolution every mutation tool already performs (`resolveTicketRef`, to turn
+`KEY-N` into the `boardId` and `itemId` the API demands) plus the mutation itself. What
+the key removes is the third request — the comment-list fetch a position would have needed
+purely to look up which comment it meant, and with it the window in which a concurrent
+delete retargets the mutation.
+
+The monotonic ordinal is what buys this: `KDO-34-3` addresses one comment for the life of
+the ticket, or nothing at all if it was deleted. There is no range check and no `was:`
+echo in the acks, because both existed only to bound a race that a stable key removes.
 
 Server-side resolution: the tools split `KEY-N-M` into the ticket ref `KEY-N` and pass the
 full key through as `commentId` — `resolveTicketRef` already handles `KEY-N`. A key that
@@ -154,8 +158,8 @@ every reviewer's findings into one response.
 
 All three writes resolve a ticket ref — `add_comment` from its `ticket` argument,
 `edit_comment` and `delete_comment` from the `KEY-N` portion of the comment key — and act
-on `ref.subtaskId ?? ref.storyId`. **Every write is a single mutation**, with no read to
-translate a handle.
+on `ref.subtaskId ?? ref.storyId`. **Each write is one resolution plus one mutation**, and
+never a comment-list fetch to work out which comment was meant.
 
 The acks come from the mutations themselves, so naming the affected comment is free:
 `addComment` returns `comment { id }` — the key the server just assigned — and
@@ -205,7 +209,7 @@ pattern:
 - `KEY-N-M` splits into the ticket ref `KEY-N` and is passed through whole as `commentId`.
 - a subtask comment key resolves via the subtask's item id, not its parent story's.
 - a malformed key (`KDO-34`, `KDO-34-x`, `34-1`) fails locally and sends **no** request.
-- each write sends **exactly one** operation — no list fetch to resolve a handle.
+- each write sends **exactly one resolution and one mutation** — no comment-list fetch.
 - acks name the key from the mutation response, not from a re-read.
 - author falls back to the raw sub when the sub is not a board member.
 - zero comments render nothing at all.
