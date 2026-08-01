@@ -53,7 +53,13 @@ you ever touch `main`.
   `git checkout -b kando-loop/<run-id>`, where `<run-id>` is a `YYYYMMDD-HHMMSS`
   timestamp.
 - **One branch serves the whole run**, including a multi-target run spanning several
-  boards. After each green flush it is fast-forwarded to `main` and reused.
+  boards. After each green flush it is fast-forwarded to `main` and reused. At the end of
+  the run it is **deleted** — see "Retiring the loop branch".
+- **Then prune the leftovers.** `git branch --merged main --list 'kando-loop/*'` and
+  delete every one it names, locally and on `origin` — they are, by definition, already
+  in `main`. Runs that died mid-flight leave these behind; sweeping them at the start of
+  the next run is what keeps them from piling up. A `kando-loop/*` branch that is **not**
+  fully merged is somebody's unshipped work: leave it alone and say so in your summary.
 
 **On each board's first ticket, call `get_board` once — then never again for that
 board.** Pass **`fields: ["board"]`**: you need the column names and nothing else. The
@@ -81,7 +87,7 @@ fetch per interruption — still far below one per worker.
 
 **For each `target` in the list, in order, repeat until it is exhausted:**
 
-1. Call `next_task(target)` — **unless step 7 already did**, in which case use the result it hands you. If it returns `{ "none": true }` → this target is **exhausted**: go to the **next target** (or, if it was the last, **flush what is on the branch, then stop — success**).
+1. Call `next_task(target)` — **unless step 7 already did**, in which case use the result it hands you. If it returns `{ "none": true }` → this target is **exhausted**: go to the **next target** (or, if it was the last, **flush what is on the branch, retire the branch, then stop — success**).
 2. Enforce safety BEFORE dispatching (cumulative across all targets):
    - If `done + human-needed ≥ 25` → **flush, then stop (max-tasks)**.
    - If the last **3** results in a row were `human-needed` → **flush, then stop (circuit breaker)**.
@@ -115,7 +121,7 @@ fetch per interruption — still far below one per worker.
 
    A run of nothing but standalone stories therefore has no hard rule at all: it is judgement the whole way, plus the exit flush, which guarantees nothing is stranded.
 
-Final summary: cumulative counts of done / human-needed / skipped, the stop reason, and — if a limit tripped mid-run — which target it stopped on. Also report the **loop branch name**, the **batches shipped** (merge sha per batch), and any tickets left `pending-ship`.
+Final summary: cumulative counts of done / human-needed / skipped, the stop reason, and — if a limit tripped mid-run — which target it stopped on. Also report the **loop branch name and whether it was deleted** (and if it was kept, why), the **batches shipped** (merge sha per batch), and any tickets left `pending-ship`.
 
 ## Batching and the flush
 
@@ -206,7 +212,38 @@ circuit breaker, not max-tasks. A fix is not a ticket; it has its own bound.
 **This leaves a deliberate manual-recovery point.** The batch's tickets keep
 `pending-ship`, so no later run will re-select them. That is correct: their code is
 written and reviewed, and re-working it is not the recovery. A human reads the Blocked
-notes and decides. The loop does not dig itself out.
+notes and decides. The loop does not dig itself out. **The branch survives this path** —
+it is the only copy of the reverted work; deleting it would destroy the thing the human
+is coming back for.
+
+## Retiring the loop branch
+
+A merged branch that is never deleted is litter, and a run that leaves one behind every
+time buries the branch list. **The branch is retired once, at the end of the run** — not
+after each flush, because one branch serves the whole run and a green flush
+fast-forwards it to carry on.
+
+**Do this as the last act of the run, after the exit flush has gone green**, before you
+write the final summary:
+
+1. `git checkout main && git pull --ff-only` — you cannot delete the branch you are
+   standing on, and `-d` judges "merged" against where you are.
+2. `git branch -d kando-loop/<run-id>` — **`-d`, never `-D`.** The lowercase flag refuses
+   to delete a branch holding commits that are not in `main`, which is exactly the check
+   you want: it is git verifying your claim that everything shipped. If it refuses,
+   **believe it** — something is unshipped. Do not reach for `-D`; report the branch as
+   kept and say what is on it.
+3. `git push origin --delete kando-loop/<run-id>` — the workers pushed it, so the remote
+   copy is the one actually cluttering the repo. A "remote ref does not exist" error here
+   is fine: it means no worker ever pushed. Nothing else about it is fine.
+
+**Keep the branch — and say so — whenever any of these hold:**
+
+- a red flush exhausted its fixers and reverted (above): the branch holds the only copy;
+- any ticket is still `pending-ship`, i.e. work sits on the branch that never shipped;
+- `git branch -d` refused, for any reason you have not fully explained.
+
+In every one of those cases the branch is a recovery artifact, not litter.
 
 ## Model tiering — deliberate, not an oversight
 
@@ -305,6 +342,7 @@ Dispatch a FRESH general-purpose subagent (it did NOT write this code) with:
 - **Never mark a ticket `done` before its batch's merge commit is on `main` AND the verification has gone green.** A ticket sitting on the loop branch under `pending-ship` is NOT done, however finished and well-reviewed it is. Only **you** set `done`, and only at step 3 of a green flush.
 - **Never let a worker push `main`.** Workers push `kando-loop/<run-id>` and nothing else; the merge is yours alone.
 - **Never exit the run with work left on the branch.** Every stop path flushes first — the sole exception being a red flush that exhausted its fixers and already reverted.
+- **Never exit the run leaving a fully merged loop branch behind**, locally or on `origin`. Retire it — and never with `git branch -D`: if `-d` refuses, the branch is holding unshipped work and must be kept and reported, not forced away.
 - **Never flush mid-container-story.** A container ships whole, as one deploy; half of one in production is the failure this design exists to prevent.
 - **Never ship a batch nobody would deploy on purpose.** A chore, a flaky-test fix or a docs change does not earn a deploy of its own — it rides along. A meaningful standalone story does, and should not be made to wait.
 - Never stop the loop to ask for deploy authorization — `/kando-loop` is the standing authorization to push the loop branch, merge it to `main`, and deploy.
