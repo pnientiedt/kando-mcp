@@ -5,11 +5,11 @@ const columnFields = `id label order`;
 
 const subtaskFields = `
   id num boardId storyId title body tags columnId rank
-  releaseId estimateHours excludedFromRelease visibleAt assignee creator archivedAt`;
+  releaseId estimateHours excludedFromRelease visibleAt assignee creator archivedAt blockedBy`;
 
 const storyFields = `
   id num boardId title body tags columnId rank
-  releaseId estimateHours visibleAt assignee creator archivedAt
+  releaseId estimateHours visibleAt assignee creator archivedAt blockedBy
   subtasks { ${subtaskFields} }`;
 
 const boardFields = `id name key role storyCount columns { ${columnFields} }`;
