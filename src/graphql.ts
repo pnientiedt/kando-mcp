@@ -18,6 +18,8 @@ const MESSAGES: Record<string, string> = {
   KEY_TAKEN: 'That board key is already taken.',
   CONFLICT: 'Someone else just changed this. Re-read and try again.',
   LAST_OWNER: 'A board must keep at least one owner.',
+  TOO_BROAD:
+    'That search covers too many boards. Name the boards you mean with `boards`, or narrow the filter.',
 };
 const FALLBACK = 'Something went wrong; the change was not saved.';
 

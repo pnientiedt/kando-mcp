@@ -16,7 +16,7 @@ export function buildServer(
   // rather than an escaped rejection that could kill the stdio session; the
   // decorator prepends the one-time expiry notice to the first successful call.
   const host = bulletproofHost(server, makeOnceNotice(opts.notice ?? null));
-  registerReadTools(host, gql, opts.email ?? null);
+  registerReadTools(host, gql);
   registerTicketTools(host, gql, opts.email ?? null);
   registerRegistryTools(host, gql);
   registerCommentTools(host, gql);
