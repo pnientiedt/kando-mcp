@@ -110,9 +110,10 @@ describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
 
     // archive it, then confirm it's in the archive and off the board
     await tools.archive_ticket({ ticket });
-    const archRes = await tools.list_archived({ board: boardKey });
+    const archRes = await tools.search_tickets({ boards: [boardKey], archived: 'archived' });
     const archived = JSON.parse(archRes.content[0].text);
-    expect(archived.some((a: any) => a.ticket === ticket || a.story?.ticket === ticket)).toBe(true);
+    expect(archived.tickets.some((a: any) => a.ticket === ticket)).toBe(true);
+    expect(archived.tickets.find((a: any) => a.ticket === ticket).archivedAt).toBeTruthy();
 
     const afterRes = await tools.get_board({ board: boardKey });
     const after = JSON.parse(afterRes.content[0].text);

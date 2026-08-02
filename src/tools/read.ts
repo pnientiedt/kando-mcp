@@ -326,42 +326,8 @@ export function registerReadTools(server: ToolHost, gql: Gql) {
     },
   );
 
-  server.registerTool(
-    'list_archived',
-    {
-      description: 'List archived items on a board, newest first.',
-      inputSchema: { board: z.string().describe('board key or id') },
-    },
-    async ({ board }) => {
-      const boardId = await resolveBoardId(gql, board);
-      const [archived, boardData] = await Promise.all([
-        gql(ARCHIVED_ITEMS, { boardId }),
-        gql(GET_BOARD, { boardId }),
-      ]);
-      const bc = boardData.getBoard;
-      const ctx = buildContext(bc);
-      const labelOf = new Map<string, string>(
-        (bc.board?.columns ?? []).map((c: any) => [c.id, c.label]),
-      );
-      const key: string | null = bc.board?.key ?? null;
-      return toolText((archived.archivedItems ?? []).map((a: any) => {
-        const raw = a.story ?? a.subtask;
-        const lean = leanItem({
-          kind: a.story ? 'story' : 'subtask',
-          id: raw.id,
-          storyId: a.subtask ? raw.storyId : undefined,
-          ticket: key && typeof raw.num === 'number' ? `${key}-${raw.num}` : null,
-          title: raw.title,
-          columnId: raw.columnId,
-          columnLabel: labelOf.get(raw.columnId) ?? raw.columnId,
-          assignee: raw.assignee ?? null,
-          tags: raw.tags ?? [],
-          releaseId: raw.releaseId ?? null,
-          snoozed: false,
-          body: null,
-        }, ctx);
-        return { ...lean, archivedAt: a.archivedAt };
-      }));
-    },
-  );
+  // No `list_archived`: `search_tickets` with `archived: "archived"` answers the
+  // same question over the same tool as every other search, and carries
+  // `archivedAt` on each row. `ARCHIVED_ITEMS` stays — `archivedDetail` needs it
+  // for the one thing getTickets cannot return, a body.
 }

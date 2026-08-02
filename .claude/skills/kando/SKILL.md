@@ -106,7 +106,23 @@ container story.
 
 ## Finding work
 
-`search_tickets` with a board plus any of `column` (label or id), `assignee` (email, `userSub`, or `"me"`), `tag` (name or id), `release` (name or id), `text` (matches title + description). Filters combine with AND. `get_board` gives the whole board when you need the full picture.
+`search_tickets` searches **across boards**, filtered server-side — omit `boards` and it
+covers every board the bot can see. Filters combine with AND:
+
+- `boards` (keys or ids), `tags` (NAMES) + `tagMode: "any"|"all"`, `releases`,
+  `assignees` (`userSub` or `"me"`), `columns` (labels or ids), `text` (title +
+  description), `kind: "story"|"subtask"`, `limit` (1–500, default 100).
+- `archived: "live"` (default) `| "archived" | "all"` — `"archived"` is how you list the
+  archive.
+- `snoozed: "show"` (default) `| "hide" | "only"` — a search never hides a future-dated
+  ticket unless you ask it to.
+
+Tag, release and column names are matched **per board**, so one name means the right
+thing on all of them at once. A row with `subtasks: N` is a **container** — move its
+subtasks, not the story. `truncated: true` means the result was cut off: narrow the
+query, there is no next page.
+
+`get_board` gives one whole board when you need the full picture.
 
 ### Lists identify; `get_ticket` explains
 

@@ -49,7 +49,7 @@ Access is **per board**. The account you log in as only sees boards it is a memb
 
 ## Tools
 
-- **Read:** `list_boards`, `get_board`, `get_ticket`, `search_tickets`, `list_archived`
+- **Read:** `list_boards`, `get_board`, `get_ticket`, `search_tickets`
 - **Tickets:** `create_story`, `create_subtask`, `update_ticket`, `move_ticket`, `reorder_ticket`, `archive_ticket`, `unarchive_ticket`, `delete_ticket`
 - **Comments:** `list_comments`, `add_comment`, `edit_comment`, `delete_comment`
 - **Tags:** `create_tag`, `update_tag`, `delete_tag`
@@ -74,6 +74,12 @@ A ticket can be **blocked by** other tickets on the same board. `get_ticket` rep
 blocker resolves once it is Done or off the board. `next_task` never returns a blocked
 ticket, nor the subtasks of a blocked container story. Set one with `blockedBy` on
 `update_ticket` / `create_story` / `create_subtask`; `[]` clears.
+
+`search_tickets` searches **across boards** (omit `boards` for all of them), filtered
+server-side: `tags` + `tagMode`, `releases`, `assignees` (`userSub` or `"me"`),
+`columns`, `text`, `kind`, `archived` (`live`/`archived`/`all` — this replaces the old
+`list_archived`), `snoozed`, `limit`. `truncated: true` means the result was cut off —
+narrow it; there is no cursor.
 
 Comments follow the same rule: **`TSK-42-3` is the third comment on `TSK-42`**, and that
 key is all `edit_comment` and `delete_comment` need — no separate ticket argument. The

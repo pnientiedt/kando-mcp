@@ -327,7 +327,7 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
       description:
         'Restore an archived ticket to the board, body intact. Restores that ticket ' +
         'ONLY: a story comes back standalone, and any subtask archived with it stays ' +
-        'archived until unarchived by name (list_archived shows them).',
+        'archived until unarchived by name (search_tickets with archived: "archived" lists them).',
       inputSchema: { ticket: z.string() },
     },
     async ({ ticket }) => {

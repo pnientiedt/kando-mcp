@@ -637,3 +637,12 @@ describe('get_ticket dependencies', () => {
     expect(out).not.toHaveProperty('blocked');
   });
 });
+
+describe('list_archived is retired', () => {
+  it('is no longer registered — search_tickets archived:"archived" answers it', () => {
+    const { host, tools } = captureHost();
+    registerReadTools(host, (async () => ({})) as never);
+    expect(tools.list_archived).toBeUndefined();
+    expect(tools.search_tickets).toBeDefined();
+  });
+});
