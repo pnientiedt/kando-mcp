@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { type Gql, type ToolHost, toolText, resolveBoardId } from './read.js';
-import { resolveTicketRef } from '../tickets.js';
+import { resolveTicketRef, requireLive } from '../tickets.js';
 import { GET_BOARD, CREATE_TAG } from '../operations.js';
 
 const KNOWN_TAG_COLORS: Record<string, { colorBg: string; colorText: string }> = {
@@ -179,7 +179,9 @@ export function registerLoopTools(server: ToolHost, gql: Gql, botEmail: string) 
       let boardId: string;
       let scope: WorkScope;
       if (isTicket) {
-        const ref = await resolveTicketRef(gql, target);
+        // An archived target has no work in it, and would otherwise read as an
+        // empty board — which the loop reports as "nothing left to do".
+        const ref = requireLive(await resolveTicketRef(gql, target), target);
         boardId = ref.boardId;
         scope = ref.subtaskId
           ? { kind: 'subtask', storyId: ref.storyId!, subtaskId: ref.subtaskId }

@@ -241,6 +241,142 @@ describe('get_ticket', () => {
   });
 });
 
+describe('get_ticket on an archived ticket', () => {
+  // getBoard drops archived rows entirely (kando infra/lambda/api/boards.ts),
+  // so an archived ticket can only be read through archivedItems.
+  const archivedStory = {
+    id: 's9',
+    num: 91,
+    columnId: 'open',
+    title: 'Archived parent',
+    body: 'ARCHIVED SPEC',
+    tags: ['t1'],
+    assignee: null,
+    releaseId: null,
+    visibleAt: null,
+    archivedAt: '2026-08-02T12:00:00.000Z',
+    subtasks: [],
+  };
+  const archivedChild = {
+    id: 'sub9',
+    num: 92,
+    storyId: 's9',
+    columnId: 'open',
+    title: 'Archived child',
+    body: 'CHILD SPEC',
+    tags: [],
+    assignee: null,
+    releaseId: null,
+    visibleAt: null,
+    archivedAt: '2026-08-02T12:00:00.000Z',
+  };
+  const liveBoard = {
+    getBoard: {
+      board: {
+        id: 'b1',
+        key: 'KDO',
+        name: 'Kando',
+        role: 'EDITOR',
+        columns: [{ id: 'open', label: 'Open', order: 0 }],
+      },
+      stories: [],
+      tags: [{ id: 't1', name: 'refined' }],
+      releases: [],
+      members: [],
+    },
+  };
+  const gqlArchived = (ref: any, items: any[]) =>
+    vi.fn(async (q: string) => {
+      if (q.includes('resolveTicket')) return { resolveTicket: ref };
+      if (q.includes('archivedItems')) return { archivedItems: items };
+      return liveBoard;
+    });
+
+  const bothItems = [
+    { archivedAt: archivedStory.archivedAt, story: archivedStory },
+    { archivedAt: archivedChild.archivedAt, subtask: archivedChild },
+  ];
+
+  it('returns the ticket with its body instead of claiming it is gone', async () => {
+    const { host, tools } = captureHost();
+    const gql = gqlArchived({ boardId: 'b1', storyId: 's9', subtaskId: null, archived: true }, bothItems);
+    registerReadTools(host, gql as never);
+
+    const res = await tools.get_ticket({ ticket: 'KDO-91' });
+    expect(res.isError).toBeFalsy();
+    const out = JSON.parse(res.content[0].text);
+    expect(out).toMatchObject({
+      ticket: 'KDO-91',
+      kind: 'story',
+      title: 'Archived parent',
+      body: 'ARCHIVED SPEC',
+      archived: true,
+      archivedAt: '2026-08-02T12:00:00.000Z',
+    });
+    // Tag ids still resolve to names via the live board's registries.
+    expect(out.tags).toEqual(['refined']);
+  });
+
+  it('lists the children that were archived along with it', async () => {
+    const { host, tools } = captureHost();
+    const gql = gqlArchived({ boardId: 'b1', storyId: 's9', subtaskId: null, archived: true }, bothItems);
+    registerReadTools(host, gql as never);
+
+    const out = JSON.parse((await tools.get_ticket({ ticket: 'KDO-91' })).content[0].text);
+    expect(out.subtasks).toEqual([
+      { ticket: 'KDO-92', title: 'Archived child', col: 'Open', parent: 'KDO-91' },
+    ]);
+  });
+
+  it('reads an archived subtask on its own', async () => {
+    const { host, tools } = captureHost();
+    const gql = gqlArchived(
+      { boardId: 'b1', storyId: 's9', subtaskId: 'sub9', archived: true },
+      bothItems,
+    );
+    registerReadTools(host, gql as never);
+
+    const out = JSON.parse((await tools.get_ticket({ ticket: 'KDO-92' })).content[0].text);
+    expect(out).toMatchObject({
+      ticket: 'KDO-92',
+      kind: 'subtask',
+      body: 'CHILD SPEC',
+      archived: true,
+    });
+    expect(out.subtasks).toBeUndefined();
+  });
+
+  it('never reads the archive for a live ticket', async () => {
+    const { host, tools } = captureHost();
+    const gql = vi.fn(async (q: string) => {
+      if (q.includes('resolveTicket')) {
+        return { resolveTicket: { boardId: 'b1', storyId: 's1', subtaskId: null, archived: false } };
+      }
+      if (q.includes('archivedItems')) throw new Error('must not query the archive for a live ticket');
+      return {
+        getBoard: {
+          ...liveBoard.getBoard,
+          stories: [{ ...archivedStory, id: 's1', num: 54, archivedAt: null }],
+        },
+      };
+    });
+    registerReadTools(host, gql as never);
+
+    const out = JSON.parse((await tools.get_ticket({ ticket: 'KDO-54' })).content[0].text);
+    expect(out.archived).toBeUndefined();
+    expect(gql.mock.calls.some((c) => String(c[0]).includes('archivedItems'))).toBe(false);
+  });
+
+  it('still reports a genuinely deleted ticket as gone', async () => {
+    // Resolved as archived, yet absent from the archive: the row is really gone.
+    const { host, tools } = captureHost();
+    const gql = gqlArchived({ boardId: 'b1', storyId: 'sX', subtaskId: null, archived: true }, []);
+    registerReadTools(host, gql as never);
+
+    await expect(tools.get_ticket({ ticket: 'KDO-999' })).rejects.toThrow(/no longer exists/i);
+  });
+});
+
 describe('tool descriptions state the new contract', () => {
   it('get_board and search_tickets point at get_ticket for bodies', () => {
     const { host, configs } = captureHost();

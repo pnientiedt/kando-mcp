@@ -1,5 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
-import { parseTicketId, parseCommentKey, resolveTicketRef, flattenBoard, filterItems } from './tickets.js';
+import {
+  parseTicketId,
+  parseCommentKey,
+  resolveTicketRef,
+  requireLive,
+  requireArchived,
+  flattenBoard,
+  filterItems,
+} from './tickets.js';
 
 describe('parseTicketId', () => {
   it('parses KEY-N', () => {
@@ -40,10 +48,58 @@ describe('parseCommentKey', () => {
 
 describe('resolveTicketRef', () => {
   it('calls resolveTicket with parsed parts', async () => {
-    const gql = vi.fn(async () => ({ resolveTicket: { boardId: 'b1', storyId: 's1', subtaskId: null } }));
+    const gql = vi.fn(async () => ({
+      resolveTicket: { boardId: 'b1', storyId: 's1', subtaskId: null, archived: false },
+    }));
     const ref = await resolveTicketRef(gql as never, 'TSK-42');
-    expect(ref).toEqual({ boardId: 'b1', storyId: 's1', subtaskId: null });
+    expect(ref).toEqual({ boardId: 'b1', storyId: 's1', subtaskId: null, archived: false });
     expect(gql).toHaveBeenCalledWith(expect.any(String), { key: 'TSK', num: 42 });
+  });
+
+  it('carries the archived flag through to callers', async () => {
+    const gql = vi.fn(async () => ({
+      resolveTicket: { boardId: 'b1', storyId: 's1', subtaskId: null, archived: true },
+    }));
+    expect(await resolveTicketRef(gql as never, 'TSK-42')).toMatchObject({ archived: true });
+  });
+
+  it('reads a backend that predates the archived field as live', async () => {
+    // Before KDO-90 the server never resolved an archived ticket at all, so a
+    // missing flag can only mean a live one. Absent must not read as undefined.
+    const gql = vi.fn(async () => ({ resolveTicket: { boardId: 'b1', storyId: 's1' } }));
+    expect((await resolveTicketRef(gql as never, 'TSK-42')).archived).toBe(false);
+  });
+});
+
+describe('requireLive', () => {
+  const live = { boardId: 'b1', storyId: 's1', archived: false };
+  const gone = { boardId: 'b1', storyId: 's1', archived: true };
+
+  it('passes a live ref straight through', () => {
+    expect(requireLive(live, 'TSK-42')).toBe(live);
+  });
+
+  it('names the ticket as archived — never as deleted', () => {
+    expect(() => requireLive(gone, 'TSK-42')).toThrow(/TSK-42.*archived/i);
+    // The whole point of KDO-90: "no longer exists" reads as gone and misleads.
+    expect(() => requireLive(gone, 'TSK-42')).not.toThrow(/no longer exists/i);
+  });
+
+  it('points at the way out', () => {
+    expect(() => requireLive(gone, 'TSK-42')).toThrow(/unarchive_ticket/);
+  });
+});
+
+describe('requireArchived', () => {
+  it('passes an archived ref through', () => {
+    const ref = { boardId: 'b1', storyId: 's1', archived: true };
+    expect(requireArchived(ref, 'TSK-42')).toBe(ref);
+  });
+
+  it('refuses to pretend it restored a ticket that was never archived', () => {
+    expect(() => requireArchived({ boardId: 'b1', storyId: 's1', archived: false }, 'TSK-42')).toThrow(
+      /not archived/i,
+    );
   });
 });
 
