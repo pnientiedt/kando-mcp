@@ -4,7 +4,13 @@ import { type Gql, type ToolHost, toolText, resolveBoardId } from './read.js';
 import { resolveTicketRef, requireLive, requireArchived, type TicketIds } from '../tickets.js';
 import { parsePosition, planReorder, POSITION_RULE, type Position } from '../reorder.js';
 import { ack } from '../shape.js';
-import { resolveColumnId, resolveTagIds, resolveReleaseId, resolveAssignee } from '../resolve.js';
+import {
+  resolveColumnId,
+  resolveTagIds,
+  resolveReleaseId,
+  resolveAssignee,
+  resolveBlockedBy,
+} from '../resolve.js';
 import { GET_BOARD } from '../operations.js';
 import {
   CREATE_STORY,
@@ -30,6 +36,7 @@ export type TicketPatch = {
   excludedFromRelease?: boolean;
   column?: string;
   rank?: string;
+  blockedBy?: string[];
 };
 
 /** Build the update op + variables, including ONLY provided fields. */
@@ -46,6 +53,7 @@ export function buildUpdateVars(ref: TicketIds, patch: TicketPatch) {
   if (patch.releaseId !== undefined) v.releaseId = patch.releaseId; // '' clears
   if (patch.visibleAt !== undefined) v.visibleAt = patch.visibleAt; // '' clears
   if (patch.estimateHours !== undefined) v.estimateHours = patch.estimateHours;
+  if (patch.blockedBy !== undefined) v.blockedBy = patch.blockedBy; // [] clears every dependency
   if (isSub && patch.excludedFromRelease !== undefined) v.excludedFromRelease = patch.excludedFromRelease;
   return { query: isSub ? UPDATE_SUBTASK : UPDATE_STORY, variables: v };
 }
@@ -60,10 +68,13 @@ async function resolvePatch(
   boardId: string,
   patch: TicketPatch,
   botEmail: string | null,
+  // The ticket being edited, so a dependency on ITSELF can be refused by name.
+  selfTicket?: string,
 ): Promise<{ patch: TicketPatch; colLabel?: string }> {
   const needs =
     patch.column !== undefined ||
     patch.tags !== undefined ||
+    patch.blockedBy !== undefined ||
     (patch.assignee !== undefined && patch.assignee !== '') ||
     (patch.releaseId !== undefined && patch.releaseId !== '');
   if (!needs) return { patch };
@@ -77,6 +88,7 @@ async function resolvePatch(
   if (patch.tags !== undefined) out.tags = resolveTagIds(bc, patch.tags);
   if (patch.assignee !== undefined) out.assignee = resolveAssignee(bc, patch.assignee, botEmail);
   if (patch.releaseId !== undefined) out.releaseId = resolveReleaseId(bc, patch.releaseId);
+  if (patch.blockedBy !== undefined) out.blockedBy = resolveBlockedBy(bc, patch.blockedBy, selfTicket);
   return { patch: out, colLabel };
 }
 
@@ -102,8 +114,20 @@ function createVars(
   if (rest.tags !== undefined) vars.tags = resolveTagIds(bc, rest.tags);
   if (rest.assignee !== undefined) vars.assignee = resolveAssignee(bc, rest.assignee, botEmail);
   if (rest.releaseId !== undefined) vars.releaseId = resolveReleaseId(bc, rest.releaseId);
+  // A brand-new ticket has no id yet, so no self-reference is possible.
+  if (rest.blockedBy !== undefined) vars.blockedBy = resolveBlockedBy(bc, rest.blockedBy);
   return { vars, colLabel };
 }
+
+/**
+ * The `blockedBy` argument, identical on all three write tools (KDO-94).
+ * A list, so `[]` is its own natural "none" — unlike the scalar fields, which
+ * clear with `''`.
+ */
+const blockedByShape = z
+  .array(z.string())
+  .optional()
+  .describe('ticket KEY-Ns on the SAME board that must be Done first; [] clears them');
 
 /** The `position` argument shared by create_story / create_subtask. */
 const positionShape = z
@@ -143,6 +167,7 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
         releaseId: z.string().optional().describe('release name or id'),
         estimateHours: z.number().optional(),
         visibleAt: z.string().optional(),
+        blockedBy: blockedByShape,
         position: positionShape,
       },
     },
@@ -175,6 +200,7 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
         estimateHours: z.number().optional(),
         excludedFromRelease: z.boolean().optional(),
         visibleAt: z.string().optional(),
+        blockedBy: blockedByShape,
         position: positionShape,
       },
     },
@@ -207,12 +233,16 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
     visibleAt: z.string().optional().describe("ISO datetime to snooze until; '' to unsnooze"),
     excludedFromRelease: z.boolean().optional().describe('subtasks only'),
     column: z.string().optional().describe('target column label or id (moves the ticket)'),
+    blockedBy: blockedByShape,
   };
 
   server.registerTool(
     'update_ticket',
     {
-      description: 'Edit a ticket (title/body/tags/assignee/release/estimate/snooze/column).',
+      description:
+        'Edit a ticket (title/body/tags/assignee/release/estimate/snooze/column/blockedBy). ' +
+        'blockedBy takes ticket KEY-Ns on the same board that must be Done before this one is workable; ' +
+        'pass [] to clear them.',
       inputSchema: { ticket: z.string(), ...patchShape },
     },
     async ({ ticket, ...raw }) => {
@@ -221,7 +251,7 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
       // archived. Say so instead of writing invisibly.
       const ref = requireLive(await resolveTicketRef(gql, ticket), ticket);
       const changed = Object.keys(raw).filter((k) => (raw as any)[k] !== undefined);
-      const { patch } = await resolvePatch(gql, ref.boardId, raw as TicketPatch, botEmail);
+      const { patch } = await resolvePatch(gql, ref.boardId, raw as TicketPatch, botEmail, ticket);
       const { query, variables } = buildUpdateVars(ref, patch);
       await gql(query, variables);
       return toolText(ack(ticket, { updated: changed }));

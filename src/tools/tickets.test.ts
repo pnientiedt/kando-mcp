@@ -35,6 +35,13 @@ describe('buildUpdateVars', () => {
     expect(Object.keys(variables).sort()).toEqual(['body', 'boardId', 'storyId'].sort());
   });
 
+  it('forwards blockedBy when provided, including the empty clear', () => {
+    expect(buildUpdateVars({ boardId: 'b1', storyId: 's1' }, { blockedBy: ['s2'] }).variables)
+      .toEqual({ boardId: 'b1', storyId: 's1', blockedBy: ['s2'] });
+    expect(buildUpdateVars({ boardId: 'b1', storyId: 's1' }, { blockedBy: [] }).variables)
+      .toEqual({ boardId: 'b1', storyId: 's1', blockedBy: [] });
+  });
+
   it('a reorder sends ONLY rank — never a column, assignee, release or snooze', () => {
     const { query, variables } = buildUpdateVars({ boardId: 'b1', storyId: 's1' }, { rank: 'V' });
     expect(query).toContain('updateStory');
@@ -416,5 +423,89 @@ describe('archived tickets', () => {
     const { host, configs } = captureHost();
     registerTicketTools(host, (async () => ({})) as never, null);
     expect(configs.unarchive_ticket.description).toMatch(/subtask/i);
+  });
+});
+
+describe('blockedBy on the write tools', () => {
+  /** KDO-1 (s1) and KDO-2 (s2), both standalone, in the single `open` column. */
+  const board = {
+    getBoard: {
+      board: { id: 'b1', key: 'KDO', columns: [{ id: 'open', label: 'Open', order: 0 }] },
+      tags: [],
+      releases: [],
+      members: [],
+      stories: [
+        { id: 's1', num: 1, columnId: 'open', rank: 'b', archivedAt: null, subtasks: [] },
+        { id: 's2', num: 2, columnId: 'open', rank: 'd', archivedAt: null, subtasks: [] },
+      ],
+    },
+  };
+
+  function gqlStub(calls: Array<{ query: string; variables: any }>) {
+    return vi.fn(async (query: string, variables: any) => {
+      calls.push({ query, variables });
+      if (query.includes('resolveTicket')) {
+        return { resolveTicket: { boardId: 'b1', storyId: 's1', subtaskId: null, archived: false } };
+      }
+      if (query.includes('getBoard')) return board;
+      if (query.includes('createStory')) return { createStory: { story: { id: 's3', num: 3 } } };
+      if (query.includes('createSubtask')) return { createSubtask: { subtask: { id: 'sub1', num: 4 } } };
+      return { updateStory: { story: { id: 's1' } } };
+    });
+  }
+
+  it('update_ticket resolves KEY-N to an id and sends it', async () => {
+    const calls: Array<{ query: string; variables: any }> = [];
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gqlStub(calls) as never);
+
+    const res = JSON.parse((await tools.update_ticket({ ticket: 'KDO-1', blockedBy: ['KDO-2'] })).content[0].text);
+    const update = calls.find((c) => c.query.includes('updateStory'));
+    expect(update!.variables.blockedBy).toEqual(['s2']);
+    expect(res.updated).toContain('blockedBy');
+  });
+
+  it('update_ticket clears with an empty list', async () => {
+    const calls: Array<{ query: string; variables: any }> = [];
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gqlStub(calls) as never);
+
+    await tools.update_ticket({ ticket: 'KDO-1', blockedBy: [] });
+    expect(calls.find((c) => c.query.includes('updateStory'))!.variables.blockedBy).toEqual([]);
+  });
+
+  it('update_ticket refuses a self-reference', async () => {
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gqlStub([]) as never);
+    await expect(tools.update_ticket({ ticket: 'KDO-1', blockedBy: ['KDO-1'] })).rejects.toThrow(/itself/i);
+  });
+
+  it('create_story and create_subtask accept blockedBy', async () => {
+    const calls: Array<{ query: string; variables: any }> = [];
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gqlStub(calls) as never);
+
+    await tools.create_story({ board: 'b1', title: 'New', blockedBy: ['KDO-2'] });
+    expect(calls.find((c) => c.query.includes('createStory'))!.variables.blockedBy).toEqual(['s2']);
+
+    await tools.create_subtask({ parent: 'KDO-1', title: 'Sub', blockedBy: ['KDO-2'] });
+    expect(calls.find((c) => c.query.includes('createSubtask'))!.variables.blockedBy).toEqual(['s2']);
+  });
+
+  it('sends no blockedBy at all when the caller did not ask for one', async () => {
+    const calls: Array<{ query: string; variables: any }> = [];
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gqlStub(calls) as never);
+
+    await tools.update_ticket({ ticket: 'KDO-1', title: 'Renamed' });
+    expect(calls.find((c) => c.query.includes('updateStory'))!.variables).not.toHaveProperty('blockedBy');
+  });
+
+  it('advertises blockedBy on all three write tools', () => {
+    const { host, configs } = captureHost();
+    registerTicketTools(host, vi.fn() as never);
+    for (const name of ['update_ticket', 'create_story', 'create_subtask']) {
+      expect(configs[name].inputSchema).toHaveProperty('blockedBy');
+    }
   });
 });

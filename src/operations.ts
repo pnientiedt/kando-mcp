@@ -57,19 +57,21 @@ const releaseChange = `boardId kind release { ${releaseFields} } deletedId`;
 
 export const CREATE_STORY = `
   mutation ($boardId: ID!, $title: String!, $columnId: ID!, $body: String,
-    $tags: [String!], $releaseId: String, $estimateHours: Float, $visibleAt: String, $assignee: String) {
+    $tags: [String!], $releaseId: String, $estimateHours: Float, $visibleAt: String, $assignee: String,
+    $blockedBy: [String!]) {
     createStory(boardId: $boardId, title: $title, columnId: $columnId, body: $body,
       tags: $tags, releaseId: $releaseId, estimateHours: $estimateHours,
-      visibleAt: $visibleAt, assignee: $assignee) { ${storyChange} }
+      visibleAt: $visibleAt, assignee: $assignee, blockedBy: $blockedBy) { ${storyChange} }
   }`;
 
 export const UPDATE_STORY = `
   mutation ($boardId: ID!, $storyId: ID!, $title: String, $columnId: ID, $rank: String,
     $body: String, $tags: [String!], $releaseId: String, $estimateHours: Float,
-    $visibleAt: String, $assignee: String) {
+    $visibleAt: String, $assignee: String, $blockedBy: [String!]) {
     updateStory(boardId: $boardId, storyId: $storyId, title: $title, columnId: $columnId,
       rank: $rank, body: $body, tags: $tags, releaseId: $releaseId,
-      estimateHours: $estimateHours, visibleAt: $visibleAt, assignee: $assignee) { ${storyChange} }
+      estimateHours: $estimateHours, visibleAt: $visibleAt, assignee: $assignee,
+      blockedBy: $blockedBy) { ${storyChange} }
   }`;
 
 export const DELETE_STORY = `
@@ -90,20 +92,21 @@ export const UNARCHIVE_STORY = `
 export const CREATE_SUBTASK = `
   mutation ($boardId: ID!, $storyId: ID!, $title: String!, $columnId: ID!, $body: String,
     $tags: [String!], $releaseId: String, $estimateHours: Float, $excludedFromRelease: Boolean,
-    $visibleAt: String, $assignee: String) {
+    $visibleAt: String, $assignee: String, $blockedBy: [String!]) {
     createSubtask(boardId: $boardId, storyId: $storyId, title: $title, columnId: $columnId,
       body: $body, tags: $tags, releaseId: $releaseId, estimateHours: $estimateHours,
-      excludedFromRelease: $excludedFromRelease, visibleAt: $visibleAt, assignee: $assignee) { ${subtaskChange} }
+      excludedFromRelease: $excludedFromRelease, visibleAt: $visibleAt, assignee: $assignee,
+      blockedBy: $blockedBy) { ${subtaskChange} }
   }`;
 
 export const UPDATE_SUBTASK = `
   mutation ($boardId: ID!, $storyId: ID!, $subtaskId: ID!, $title: String, $columnId: ID,
     $rank: String, $body: String, $tags: [String!], $releaseId: String, $estimateHours: Float,
-    $excludedFromRelease: Boolean, $visibleAt: String, $assignee: String) {
+    $excludedFromRelease: Boolean, $visibleAt: String, $assignee: String, $blockedBy: [String!]) {
     updateSubtask(boardId: $boardId, storyId: $storyId, subtaskId: $subtaskId, title: $title,
       columnId: $columnId, rank: $rank, body: $body, tags: $tags, releaseId: $releaseId,
       estimateHours: $estimateHours, excludedFromRelease: $excludedFromRelease,
-      visibleAt: $visibleAt, assignee: $assignee) { ${subtaskChange} }
+      visibleAt: $visibleAt, assignee: $assignee, blockedBy: $blockedBy) { ${subtaskChange} }
   }`;
 
 export const DELETE_SUBTASK = `
