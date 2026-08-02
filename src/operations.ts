@@ -30,9 +30,11 @@ export const GET_BOARD = `
     }
   }`;
 
+// `archived` (KDO-90): resolveTicket returns archived tickets too, flagged, rather
+// than 404ing them. Without it unarchive_ticket could never resolve its own target.
 export const RESOLVE_TICKET = `
   query ResolveTicket($key: String!, $num: Int!) {
-    resolveTicket(key: $key, num: $num) { boardId storyId subtaskId }
+    resolveTicket(key: $key, num: $num) { boardId storyId subtaskId archived }
   }`;
 
 export const ARCHIVED_ITEMS = `

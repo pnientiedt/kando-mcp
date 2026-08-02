@@ -28,12 +28,53 @@ export function parseCommentKey(input: string): { ticket: string; commentId: str
   return { ticket, commentId: `${ticket}-${m[3]}` };
 }
 
-export type TicketRef = { boardId: string; storyId?: string; subtaskId?: string };
+/** Just the addressing. What a mutation needs to name its target row. */
+export type TicketIds = { boardId: string; storyId?: string; subtaskId?: string };
+
+export type TicketRef = TicketIds & {
+  /** Resolved, but NOT on the board. Archived is a state, not an absence. */
+  archived: boolean;
+};
 
 export async function resolveTicketRef(gql: GqlClient, input: string): Promise<TicketRef> {
   const { key, num } = parseTicketId(input);
   const data = await gql(RESOLVE_TICKET, { key, num });
-  return data.resolveTicket as TicketRef;
+  const ref = data.resolveTicket as TicketRef;
+  // A server predating KDO-90 omits the field — and never resolved an archived
+  // ticket at all, so absent can only mean live. Normalise so no caller has to
+  // distinguish `false` from `undefined` when deciding whether to write.
+  return { ...ref, archived: Boolean(ref?.archived) };
+}
+
+/**
+ * A ticket that resolves is not necessarily on the board.
+ *
+ * Before KDO-90 every write tool got this guarantee for free: `resolveTicket`
+ * 404'd archived tickets, so nothing could edit one. Now that they resolve, a
+ * tool that changes a ticket's place in the workflow has to say no itself —
+ * otherwise it silently mutates something the caller cannot see.
+ *
+ * The wording matters as much as the guard. NOT_FOUND's "no longer exists" reads
+ * as *deleted*, which is what sent KDO-90's reporter looking for a ticket that
+ * was sitting in the archive intact.
+ */
+export function requireLive(ref: TicketRef, ticket: string): TicketRef {
+  if (ref.archived) {
+    throw new KandoError(
+      `${ticket} is archived, not deleted — it still exists, but it is off the board. ` +
+        'Restore it with unarchive_ticket first, or read it with get_ticket.',
+      'ARCHIVED',
+    );
+  }
+  return ref;
+}
+
+/** The mirror image: unarchive_ticket only ever has work to do on an archived ticket. */
+export function requireArchived(ref: TicketRef, ticket: string): TicketRef {
+  if (!ref.archived) {
+    throw new KandoError(`${ticket} is not archived — it is already on the board.`, 'NOT_ARCHIVED');
+  }
+  return ref;
 }
 
 export type FlatItem = {

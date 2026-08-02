@@ -1,6 +1,7 @@
 import { z } from 'zod';
+import { KandoError } from '../graphql.js';
 import { type Gql, type ToolHost, toolText, resolveBoardId } from './read.js';
-import { resolveTicketRef, type TicketRef } from '../tickets.js';
+import { resolveTicketRef, requireLive, requireArchived, type TicketIds } from '../tickets.js';
 import { parsePosition, planReorder, POSITION_RULE, type Position } from '../reorder.js';
 import { ack } from '../shape.js';
 import { resolveColumnId, resolveTagIds, resolveReleaseId, resolveAssignee } from '../resolve.js';
@@ -32,7 +33,7 @@ export type TicketPatch = {
 };
 
 /** Build the update op + variables, including ONLY provided fields. */
-export function buildUpdateVars(ref: TicketRef, patch: TicketPatch) {
+export function buildUpdateVars(ref: TicketIds, patch: TicketPatch) {
   const v: Record<string, unknown> = { boardId: ref.boardId, storyId: ref.storyId };
   const isSub = !!ref.subtaskId;
   if (isSub) v.subtaskId = ref.subtaskId;
@@ -119,7 +120,7 @@ const positionShape = z
  * Deliberately not atomic with the create: `createStory`/`createSubtask` take no
  * rank, and the failure mode is benign — the ticket exists, at the bottom.
  */
-async function applyPosition(gql: Gql, ref: TicketRef, position: Position) {
+async function applyPosition(gql: Gql, ref: TicketIds, position: Position) {
   const data = await gql(GET_BOARD, { boardId: ref.boardId });
   const rank = planReorder(data.getBoard, ref, position);
   const { query, variables } = buildUpdateVars(ref, { rank });
@@ -179,7 +180,7 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
     },
     async ({ parent, column, position, ...rest }) => {
       const pos = position ? parsePosition(position) : null; // validate before creating anything
-      const ref = await resolveTicketRef(gql, parent);
+      const ref = requireLive(await resolveTicketRef(gql, parent), parent);
       const storyId = ref.subtaskId ? undefined : ref.storyId;
       if (!storyId) throw new Error('parent must be a story ticket, not a subtask');
       const { bc, cols } = await boardForCreate(gql, ref.boardId);
@@ -187,7 +188,7 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
       const data = await gql(CREATE_SUBTASK, { boardId: ref.boardId, storyId, ...vars });
       const subtask = data.createSubtask.subtask;
       if (pos) {
-        const subRef: TicketRef = { boardId: ref.boardId, storyId, subtaskId: subtask.id };
+        const subRef: TicketIds = { boardId: ref.boardId, storyId, subtaskId: subtask.id };
         await applyPosition(gql, subRef, pos);
       }
       const key = bc.board?.key ?? null;
@@ -215,7 +216,10 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
       inputSchema: { ticket: z.string(), ...patchShape },
     },
     async ({ ticket, ...raw }) => {
-      const ref = await resolveTicketRef(gql, ticket);
+      // Editing something off the board is almost never what was meant, and half
+      // this patch surface (column, rank, release progress) has no meaning while
+      // archived. Say so instead of writing invisibly.
+      const ref = requireLive(await resolveTicketRef(gql, ticket), ticket);
       const changed = Object.keys(raw).filter((k) => (raw as any)[k] !== undefined);
       const { patch } = await resolvePatch(gql, ref.boardId, raw as TicketPatch, botEmail);
       const { query, variables } = buildUpdateVars(ref, patch);
@@ -231,7 +235,7 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
       inputSchema: { ticket: z.string(), column: z.string().describe('target column label or id') },
     },
     async ({ ticket, column }) => {
-      const ref = await resolveTicketRef(gql, ticket);
+      const ref = requireLive(await resolveTicketRef(gql, ticket), ticket);
       const { patch, colLabel } = await resolvePatch(gql, ref.boardId, { column }, botEmail);
       const { query, variables } = buildUpdateVars(ref, patch);
       await gql(query, variables);
@@ -256,7 +260,7 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
     },
     async ({ ticket, to, before, after }) => {
       const position = parsePosition({ to, before, after }); // validate before any network call
-      const ref = await resolveTicketRef(gql, ticket);
+      const ref = requireLive(await resolveTicketRef(gql, ticket), ticket);
       await applyPosition(gql, ref, position);
       return toolText(ack(ticket, { position: to ?? (before ? `before ${before}` : `after ${after}`) }));
     },
@@ -265,11 +269,19 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
   server.registerTool(
     'archive_ticket',
     {
-      description: 'Archive a ticket (reversible; preferred over delete).',
+      description:
+        'Archive a ticket (reversible; preferred over delete). Archiving a story ' +
+        'archives its subtasks with it.',
       inputSchema: { ticket: z.string() },
     },
     async ({ ticket }) => {
       const ref = await resolveTicketRef(gql, ticket);
+      if (ref.archived) {
+        throw new KandoError(
+          `${ticket} is already archived. Use unarchive_ticket to restore it.`,
+          'ARCHIVED',
+        );
+      }
       if (ref.subtaskId) {
         await gql(ARCHIVE_SUBTASK, { boardId: ref.boardId, storyId: ref.storyId, subtaskId: ref.subtaskId });
       } else {
@@ -282,11 +294,16 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
   server.registerTool(
     'unarchive_ticket',
     {
-      description: 'Restore an archived ticket.',
+      description:
+        'Restore an archived ticket to the board, body intact. Restores that ticket ' +
+        'ONLY: a story comes back standalone, and any subtask archived with it stays ' +
+        'archived until unarchived by name (list_archived shows them).',
       inputSchema: { ticket: z.string() },
     },
     async ({ ticket }) => {
-      const ref = await resolveTicketRef(gql, ticket);
+      // The one tool whose target is archived by definition — and the one that
+      // could never succeed before KDO-90, because resolving it 404'd.
+      const ref = requireArchived(await resolveTicketRef(gql, ticket), ticket);
       if (ref.subtaskId) {
         await gql(UNARCHIVE_SUBTASK, {
           boardId: ref.boardId,
@@ -307,6 +324,9 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
       inputSchema: { ticket: z.string() },
     },
     async ({ ticket }) => {
+      // Deliberately NOT guarded on archived: purging something already archived
+      // is the normal path, and making the caller restore it to the board first
+      // just to delete it would be perverse.
       const ref = await resolveTicketRef(gql, ticket);
       if (ref.subtaskId) {
         await gql(DELETE_SUBTASK, { boardId: ref.boardId, storyId: ref.storyId, subtaskId: ref.subtaskId });

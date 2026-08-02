@@ -54,13 +54,15 @@ describe('buildUpdateVars', () => {
 /** A capturing ToolHost: records each tool's callback by name. */
 function captureHost() {
   const tools: Record<string, (args: any) => Promise<any>> = {};
+  const configs: Record<string, any> = {};
   const host: ToolHost = {
-    registerTool(name, _config, cb) {
+    registerTool(name, config, cb) {
       tools[name] = cb;
+      configs[name] = config;
       return undefined;
     },
   };
-  return { host, tools };
+  return { host, tools, configs };
 }
 
 /** Two standalone stories in `open`: KDO-1 (rank 'b'), KDO-2 (rank 'd'). */
@@ -216,11 +218,11 @@ function fullBoard() {
   };
 }
 
-const ticketGql = (calls: any[], extra: (q: string) => any = () => ({})) =>
+const ticketGql = (calls: any[], extra: (q: string) => any = () => ({}), archived = false) =>
   vi.fn(async (q: string, v: any) => {
     calls.push({ q, v });
     if (q.includes('resolveTicket')) {
-      return { resolveTicket: { boardId: 'b1', storyId: 's1', subtaskId: null } };
+      return { resolveTicket: { boardId: 'b1', storyId: 's1', subtaskId: null, archived } };
     }
     if (q.includes('myBoards')) return { myBoards: [{ id: 'b1', key: 'KDO' }] };
     if (q.includes('getBoard')) return fullBoard();
@@ -279,7 +281,8 @@ describe('mutations return an ack, not the object', () => {
 
   it('unarchive_ticket acks instead of echoing the story', async () => {
     const calls: any[] = [];
-    const gql = ticketGql(calls, () => ({ unarchiveStory: { story: { id: 's1', num: 54 } } }));
+    // Its target is archived by definition — see the "archived tickets" suite.
+    const gql = ticketGql(calls, () => ({ unarchiveStory: { story: { id: 's1', num: 54 } } }), true);
     const { host, tools } = captureHost();
     registerTicketTools(host, gql as never, null);
     expect(
@@ -309,5 +312,109 @@ describe('mutations return an ack, not the object', () => {
         .text,
     );
     expect(out).toEqual({ ticket: 'KDO-63', title: 'New', col: 'In Progress' });
+  });
+});
+
+/**
+ * KDO-90 made `resolveTicket` return archived tickets instead of 404ing them.
+ * That is what makes unarchive_ticket possible at all — and it also means every
+ * other tool now resolves a ticket that is NOT on the board, where it used to
+ * fail for free. Each one has to decide deliberately.
+ */
+describe('archived tickets', () => {
+  const archGql = (calls: any[], archived: boolean, extra: (q: string) => any = () => ({})) =>
+    vi.fn(async (q: string, v: any) => {
+      calls.push({ q, v });
+      if (q.includes('resolveTicket')) {
+        return { resolveTicket: { boardId: 'b1', storyId: 's1', subtaskId: null, archived } };
+      }
+      if (q.includes('myBoards')) return { myBoards: [{ id: 'b1', key: 'KDO' }] };
+      if (q.includes('getBoard')) return fullBoard();
+      return extra(q);
+    });
+
+  const sent = (calls: any[], op: string) => calls.filter((c) => c.q.includes(op));
+
+  it('unarchive_ticket restores an archived ticket — the whole point of KDO-90', async () => {
+    const calls: any[] = [];
+    const gql = archGql(calls, true, () => ({ unarchiveStory: { story: { id: 's1', num: 54 } } }));
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gql as never, null);
+
+    const out = JSON.parse((await tools.unarchive_ticket({ ticket: 'KDO-54' })).content[0].text);
+    expect(out).toMatchObject({ unarchived: 'KDO-54' });
+    expect(sent(calls, 'unarchiveStory')).toHaveLength(1);
+  });
+
+  it('unarchive_ticket refuses a live ticket instead of silently "succeeding"', async () => {
+    const calls: any[] = [];
+    const gql = archGql(calls, false);
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gql as never, null);
+
+    await expect(tools.unarchive_ticket({ ticket: 'KDO-54' })).rejects.toThrow(/not archived/i);
+    expect(sent(calls, 'unarchiveStory')).toHaveLength(0);
+  });
+
+  it('archive_ticket refuses one that is already archived', async () => {
+    const calls: any[] = [];
+    const gql = archGql(calls, true);
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gql as never, null);
+
+    await expect(tools.archive_ticket({ ticket: 'KDO-54' })).rejects.toThrow(/already archived/i);
+    expect(sent(calls, 'archiveStory')).toHaveLength(0);
+  });
+
+  for (const [name, args] of [
+    ['update_ticket', { ticket: 'KDO-54', title: 'edited' }],
+    ['move_ticket', { ticket: 'KDO-54', column: 'In Progress' }],
+    ['reorder_ticket', { ticket: 'KDO-54', to: 'top' }],
+  ] as const) {
+    it(`${name} rejects an archived ticket as archived, not as deleted`, async () => {
+      const calls: any[] = [];
+      const gql = archGql(calls, true);
+      const { host, tools } = captureHost();
+      registerTicketTools(host, gql as never, 'bot@example.com');
+
+      const p = (tools as any)[name](args);
+      await expect(p).rejects.toThrow(/archived/i);
+      await expect(p).rejects.toThrow(/unarchive_ticket/);
+      await expect(p).rejects.not.toThrow(/no longer exists/i);
+      // Nothing was written to a ticket that is off the board.
+      expect(sent(calls, 'updateStory')).toHaveLength(0);
+    });
+  }
+
+  it('delete_ticket still works on an archived ticket — that is the intended path', async () => {
+    const calls: any[] = [];
+    const gql = archGql(calls, true, () => ({ deleteStory: { deletedId: 's1' } }));
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gql as never, null);
+
+    expect(
+      JSON.parse((await tools.delete_ticket({ ticket: 'KDO-54' })).content[0].text),
+    ).toEqual({ deleted: 'KDO-54' });
+    expect(sent(calls, 'deleteStory')).toHaveLength(1);
+  });
+
+  it('create_subtask refuses to hang a child off an archived parent', async () => {
+    const calls: any[] = [];
+    const gql = archGql(calls, true);
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gql as never, null);
+
+    await expect(
+      tools.create_subtask({ parent: 'KDO-54', title: 'orphan' }),
+    ).rejects.toThrow(/archived/i);
+    expect(sent(calls, 'createSubtask')).toHaveLength(0);
+  });
+
+  it("unarchive_ticket's description warns that children do not come back", async () => {
+    // kando infra/lambda/api/stories.ts: archiveStory cascades to subtasks,
+    // unarchiveStory clears archivedAt on the story row ONLY.
+    const { host, configs } = captureHost();
+    registerTicketTools(host, (async () => ({})) as never, null);
+    expect(configs.unarchive_ticket.description).toMatch(/subtask/i);
   });
 });

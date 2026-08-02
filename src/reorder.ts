@@ -1,6 +1,6 @@
 import { KandoError } from './graphql.js';
 import { rankBetween } from './rank.js';
-import { parseTicketId, type TicketRef } from './tickets.js';
+import { parseTicketId, type TicketIds } from './tickets.js';
 
 /**
  * Pure rank planning for `reorder_ticket` (KDO-40) — no network, no MCP types.
@@ -56,7 +56,7 @@ const live = (x: { archivedAt?: string | null }) => !x.archivedAt;
 const isContainer = (s: any) => (s.subtasks ?? []).filter(live).length > 0;
 const byRank = (a: Rankable, b: Rankable) => (a.rank < b.rank ? -1 : a.rank > b.rank ? 1 : 0);
 
-function findSelf(bc: any, ref: TicketRef): { self: Rankable; story: any } {
+function findSelf(bc: any, ref: TicketIds): { self: Rankable; story: any } {
   const story = (bc.stories ?? []).find((s: any) => s.id === ref.storyId);
   if (!story) throw new KandoError('That story no longer exists.', 'NOT_FOUND');
   if (!ref.subtaskId) return { self: story as Rankable, story };
@@ -77,7 +77,7 @@ function findSelf(bc: any, ref: TicketRef): { self: Rankable; story: any } {
  * Peers are sorted by rank and never include the moving ticket itself —
  * otherwise "top" would be computed against its own current rank.
  */
-export function peerGroup(bc: any, ref: TicketRef): { self: Rankable; peers: Rankable[]; kind: PeerKind } {
+export function peerGroup(bc: any, ref: TicketIds): { self: Rankable; peers: Rankable[]; kind: PeerKind } {
   const { self, story } = findSelf(bc, ref);
   const stories = (bc.stories ?? []).filter(live);
   let peers: Rankable[];
@@ -162,7 +162,7 @@ function allRankables(bc: any): Array<{ item: Rankable; kind: PeerKind }> {
  * caller passes the `getBoard` payload and sends the result as a rank-only
  * update, so nothing else on the ticket can be touched.
  */
-export function planReorder(bc: any, ref: TicketRef, position: Position): string {
+export function planReorder(bc: any, ref: TicketIds, position: Position): string {
   const { self, peers, kind } = peerGroup(bc, ref);
   if ('to' in position) {
     return position.to === 'top'

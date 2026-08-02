@@ -119,6 +119,55 @@ describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
     expect(after.items.some((i: any) => i.ticket === ticket)).toBe(false);
   }, 30_000);
 
+  /**
+   * KDO-90/KDO-91's acceptance, end to end against the deployed backend — the one
+   * claim a fake gql cannot make. Archiving through MCP used to be a one-way door:
+   * `resolveTicket` 404'd archived tickets, so the tool that restores one could
+   * never resolve its own target, and `get_ticket` answered "no longer exists" for
+   * a ticket sitting in the archive intact.
+   */
+  it('reads and restores an archived ticket — the round trip that used to be impossible', async () => {
+    const BODY = 'the body that must survive the round trip';
+    const created = JSON.parse(
+      (await tools.create_story({ board: boardKey, title: 'e2e archive round trip', body: BODY }))
+        .content[0].text,
+    );
+    const ticket: string = created.ticket;
+    await tools.archive_ticket({ ticket });
+
+    // 1. get_ticket returns it, marked archived, with the body intact.
+    const detail = JSON.parse((await tools.get_ticket({ ticket })).content[0].text);
+    expect(detail).toMatchObject({ ticket, archived: true, body: BODY });
+    expect(detail.archivedAt).toEqual(expect.any(String));
+
+    // 2. A write is refused as archived — not reported as deleted.
+    await expect(tools.update_ticket({ ticket, title: 'nope' })).rejects.toThrow(/archived/i);
+    await expect(tools.update_ticket({ ticket, title: 'nope' })).rejects.not.toThrow(
+      /no longer exists/i,
+    );
+
+    // 3. unarchive_ticket actually restores it, and it is back on the board.
+    expect(
+      JSON.parse((await tools.unarchive_ticket({ ticket })).content[0].text),
+    ).toMatchObject({ unarchived: ticket });
+    const board = JSON.parse((await tools.get_board({ board: boardKey })).content[0].text);
+    expect(board.items.some((i: any) => i.ticket === ticket)).toBe(true);
+
+    // 4. Live again: readable without the archived marker, and writable.
+    const live = JSON.parse((await tools.get_ticket({ ticket })).content[0].text);
+    expect(live.archived).toBeUndefined();
+    expect(live.body).toBe(BODY);
+    await expect(tools.unarchive_ticket({ ticket })).rejects.toThrow(/not archived/i);
+  }, 30_000);
+
+  // A genuinely absent ticket must still read as gone — the guard that keeps
+  // "archived" from swallowing real NOT_FOUNDs.
+  it('still reports a never-existing ticket as gone', async () => {
+    await expect(tools.get_ticket({ ticket: `${boardKey}-9999` })).rejects.toThrow(
+      /no longer exists/i,
+    );
+  }, 30_000);
+
   // The claim the whole comment-addressing design rests on: the per-item ordinal
   // is persisted and monotonic. A fake gql cannot prove that — only the backend
   // can — so it is asserted here rather than assumed. If a delete ever starts

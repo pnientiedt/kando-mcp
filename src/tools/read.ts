@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { KandoError, type GqlClient } from '../graphql.js';
 import { MY_BOARDS, GET_BOARD, ARCHIVED_ITEMS, COMMENTS } from '../operations.js';
-import { flattenBoard, filterItems, resolveTicketRef } from '../tickets.js';
+import { flattenBoard, filterItems, resolveTicketRef, type TicketRef } from '../tickets.js';
 import { buildContext, leanItem, leanDetail, leanComments, COMMENT_CAP } from '../shape.js';
 import { resolveTagIds, resolveReleaseId, resolveAssignee } from '../resolve.js';
 
@@ -21,6 +21,91 @@ export interface ToolHost {
 /** Compact on purpose: the 2-space indent was ~26% of every response. */
 export function toolText(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value) }] };
+}
+
+/**
+ * Read one archived ticket.
+ *
+ * `getBoard` drops archived rows wholesale, so the ticket itself has to come from
+ * `archivedItems`; the board is still read alongside it, purely for the registries
+ * that turn ids into names (tags, members, releases, column labels).
+ *
+ * Returning it marked `archived` is the point: before KDO-90 this path answered
+ * "no longer exists" for a ticket sitting in the archive intact, which reads as
+ * deleted and cost a caller the body they were trying to recover.
+ */
+async function archivedDetail(
+  gql: Gql,
+  ref: TicketRef,
+  ticket: string,
+  itemId?: string,
+): Promise<ToolResult> {
+  const [adata, bdata, cdata] = await Promise.all([
+    gql(ARCHIVED_ITEMS, { boardId: ref.boardId }),
+    gql(GET_BOARD, { boardId: ref.boardId }),
+    gql(COMMENTS, { boardId: ref.boardId, itemId }),
+  ]);
+  const entries: any[] = adata.archivedItems ?? [];
+  const mine = entries.find((a) =>
+    ref.subtaskId ? a.subtask?.id === ref.subtaskId : a.story?.id === ref.storyId,
+  );
+  // Resolved as archived yet missing from the archive: the row really is gone.
+  if (!mine) throw new KandoError('That no longer exists — it may have been deleted.', 'NOT_FOUND');
+
+  const bc = bdata.getBoard;
+  const ctx = buildContext(bc);
+  const labelOf = new Map<string, string>(
+    (bc.board?.columns ?? []).map((c: any) => [c.id, c.label]),
+  );
+  const key: string | null = bc.board?.key ?? null;
+  const ticketOf = (num: unknown) =>
+    key && typeof num === 'number' ? `${key}-${num}` : null;
+  // ctx is built from the live board, so it cannot name anything in the archive.
+  // Register the archived items themselves and KEY-N references resolve as usual
+  // — notably a child naming the parent it was archived with.
+  for (const a of entries) {
+    const it = a.story ?? a.subtask;
+    const t = ticketOf(it?.num);
+    if (it && t) ctx.ticketOf.set(it.id, t);
+  }
+  const raw = mine.story ?? mine.subtask;
+  const { comments, earlier } = leanComments(cdata.comments, ctx, COMMENT_CAP);
+
+  // Archiving a story cascades to its subtasks (they are archived with it), so a
+  // container's children are in this same payload — not on the board.
+  const subs = mine.story
+    ? entries
+        .filter((a) => a.subtask?.storyId === raw.id)
+        .map((a) => ({
+          kind: 'subtask' as const,
+          id: a.subtask.id,
+          storyId: a.subtask.storyId,
+          ticket: ticketOf(a.subtask.num),
+          title: a.subtask.title,
+          columnId: a.subtask.columnId,
+          columnLabel: labelOf.get(a.subtask.columnId) ?? a.subtask.columnId,
+          assignee: a.subtask.assignee ?? null,
+          tags: a.subtask.tags ?? [],
+          releaseId: a.subtask.releaseId ?? null,
+          snoozed: false,
+          body: null,
+        }))
+    : undefined;
+
+  const out = leanDetail(raw, ctx, {
+    kind: mine.story ? 'story' : 'subtask',
+    // The archived ticket is absent from the board, so ctx cannot name it — but
+    // the caller just asked for it by key, which is the same answer.
+    ticket,
+    columnLabel: labelOf.get(raw.columnId) ?? raw.columnId,
+    parent: mine.subtask ? ctx.ticketOf.get(raw.storyId) : undefined,
+    subtasks: subs?.length ? subs : undefined,
+  });
+  out.archived = true;
+  out.archivedAt = mine.archivedAt;
+  if (comments.length) out.comments = comments;
+  if (earlier) out.earlierComments = earlier;
+  return toolText(out);
 }
 
 const KEY_RE = /^[A-Z]{1,10}$/;
@@ -125,6 +210,9 @@ export function registerReadTools(server: ToolHost, gql: Gql, botEmail: string |
     async ({ ticket }) => {
       const ref = await resolveTicketRef(gql, ticket);
       const itemId = ref.subtaskId ?? ref.storyId;
+      // An archived ticket is readable but absent from getBoard, which drops
+      // archived rows wholesale — it has to come from the archive instead.
+      if (ref.archived) return archivedDetail(gql, ref, ticket, itemId);
       // The ref already names the item, so the comments read does not have to
       // wait on the board read — only on the resolve that produced both ids.
       const [data, cdata] = await Promise.all([
