@@ -500,3 +500,52 @@ describe('get_ticket comments', () => {
     expect(log.indexOf('comments:start')).toBeLessThan(log.indexOf('board:end'));
   });
 });
+
+describe('get_ticket dependencies', () => {
+  const boardWithBlockers = {
+    getBoard: {
+      board: {
+        key: 'KDO',
+        columns: [
+          { id: 'c1', label: 'Open', order: 0 },
+          { id: 'c2', label: 'Done', order: 1 },
+        ],
+      },
+      tags: [],
+      releases: [],
+      members: [],
+      stories: [
+        { id: 's1', num: 1, title: 'Blocked one', body: 'B', columnId: 'c1', tags: [], blockedBy: ['s2', 's3'], subtasks: [] },
+        { id: 's2', num: 2, title: 'Open blocker', columnId: 'c1', tags: [], blockedBy: [], subtasks: [] },
+        { id: 's3', num: 3, title: 'Done blocker', columnId: 'c2', tags: [], blockedBy: [], subtasks: [] },
+      ],
+    },
+  };
+
+  const stubFor = (bc: any) =>
+    vi.fn(async (query: string) => {
+      if (query.includes('resolveTicket')) {
+        return { resolveTicket: { boardId: 'b1', storyId: 's1', subtaskId: null, archived: false } };
+      }
+      if (query.includes('comments')) return { comments: [] };
+      return bc;
+    });
+
+  it('lists both blockers and flags the ticket blocked while one is open', async () => {
+    const { host, tools } = captureHost();
+    registerReadTools(host, stubFor(boardWithBlockers) as never);
+    const out = JSON.parse((await tools.get_ticket({ ticket: 'KDO-1' })).content[0].text);
+    expect(out.blockedBy).toEqual(['KDO-2', 'KDO-3']);
+    expect(out.blocked).toBe(true);
+  });
+
+  it('drops the flag once every blocker is Done', async () => {
+    const done = structuredClone(boardWithBlockers);
+    done.getBoard.stories[1].columnId = 'c2';
+    const { host, tools } = captureHost();
+    registerReadTools(host, stubFor(done) as never);
+    const out = JSON.parse((await tools.get_ticket({ ticket: 'KDO-1' })).content[0].text);
+    expect(out.blockedBy).toEqual(['KDO-2', 'KDO-3']);
+    expect(out).not.toHaveProperty('blocked');
+  });
+});

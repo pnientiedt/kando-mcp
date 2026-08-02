@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { resolveColumnId, resolveTagIds, resolveReleaseId, resolveAssignee } from './resolve.js';
+import {
+  resolveColumnId,
+  resolveTagIds,
+  resolveReleaseId,
+  resolveAssignee,
+  resolveBlockedBy,
+} from './resolve.js';
 import { bc } from './shape.test.js';
 
 describe('resolveColumnId', () => {
@@ -66,5 +72,40 @@ describe('resolveAssignee', () => {
 
   it('names the members when the value is unknown', () => {
     expect(() => resolveAssignee(bc(), 'nobody@x.com', null)).toThrow(/bot@example\.com/);
+  });
+});
+
+describe('resolveBlockedBy', () => {
+  const board = {
+    board: { key: 'KDO', columns: [{ id: 'c1', label: 'Open', order: 0 }] },
+    stories: [
+      { id: 's1', num: 1, subtasks: [{ id: 'sub1', num: 2 }] },
+      { id: 's2', num: 3, subtasks: [] },
+    ],
+  };
+
+  it('turns KEY-N into ids, for stories and subtasks alike', () => {
+    expect(resolveBlockedBy(board, ['KDO-1', 'KDO-2'])).toEqual(['s1', 'sub1']);
+  });
+
+  it('is case-insensitive on the key', () => {
+    expect(resolveBlockedBy(board, ['kdo-3'])).toEqual(['s2']);
+  });
+
+  it('passes a raw id through when it names a board item', () => {
+    expect(resolveBlockedBy(board, ['sub1'])).toEqual(['sub1']);
+  });
+
+  it('clears with an empty list', () => {
+    expect(resolveBlockedBy(board, [])).toEqual([]);
+  });
+
+  it('refuses a ticket that is not on this board — dependencies are same-board', () => {
+    expect(() => resolveBlockedBy(board, ['KDO-99'])).toThrow(/KDO-99/);
+    expect(() => resolveBlockedBy(board, ['OTHER-1'])).toThrow(/same board/i);
+  });
+
+  it('refuses a self-reference', () => {
+    expect(() => resolveBlockedBy(board, ['KDO-1'], 'KDO-1')).toThrow(/itself/i);
   });
 });

@@ -166,6 +166,41 @@ describe('leanDetail', () => {
     expect(d.visibleAt).toBe('2099-01-01T00:00:00Z');
     expect(d.parent).toBe('KDO-1');
   });
+
+  it('names the blockers and flags an unresolved one', () => {
+    const d = leanDetail(raw, buildContext(bc()), {
+      kind: 'story',
+      ticket: 'KDO-1',
+      columnLabel: 'Open',
+      blockers: { list: ['KDO-7', 'KDO-9'], blocked: true },
+    });
+    expect(d.blockedBy).toEqual(['KDO-7', 'KDO-9']);
+    expect(d.blocked).toBe(true);
+  });
+
+  it('keeps a resolved dependency listed but drops the blocked flag', () => {
+    // The association is part of the record: KDO-7 being Done is not a reason
+    // to forget the ticket was ordered behind it.
+    const d = leanDetail(raw, buildContext(bc()), {
+      kind: 'story',
+      ticket: 'KDO-1',
+      columnLabel: 'Open',
+      blockers: { list: ['KDO-7'], blocked: false },
+    });
+    expect(d.blockedBy).toEqual(['KDO-7']);
+    expect(d).not.toHaveProperty('blocked');
+  });
+
+  it('emits neither field when there are no dependencies', () => {
+    const d = leanDetail(raw, buildContext(bc()), {
+      kind: 'story',
+      ticket: 'KDO-1',
+      columnLabel: 'Open',
+      blockers: { list: [], blocked: false },
+    });
+    expect(d).not.toHaveProperty('blockedBy');
+    expect(d).not.toHaveProperty('blocked');
+  });
 });
 
 describe('leanComments', () => {

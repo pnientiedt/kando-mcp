@@ -88,6 +88,8 @@ fetch per interruption — still far below one per worker.
 **For each `target` in the list, in order, repeat until it is exhausted:**
 
 1. Call `next_task(target)` — **unless step 7 already did**, in which case use the result it hands you. If it returns `{ "none": true }` → this target is **exhausted**: go to the **next target** (or, if it was the last, **flush what is on the branch, retire the branch, then stop — success**).
+
+   `next_task` also skips a ticket whose `blockedBy` dependency is not resolved yet, and the subtasks of a blocked container story with it. That is normal, not a fault: the blocker is often a ticket **this loop is about to finish**, and the ticket becomes workable the moment its blocker reaches the last column. Never clear someone's `blockedBy` to unstick a target — work the blocker, or move on to the next target.
 2. Enforce safety BEFORE dispatching (cumulative across all targets):
    - If `done + human-needed ≥ 25` → **flush, then stop (max-tasks)**.
    - If the last **3** results in a row were `human-needed` → **flush, then stop (circuit breaker)**.

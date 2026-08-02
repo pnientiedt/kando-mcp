@@ -66,6 +66,12 @@ export type DetailOpts = {
   columnLabel: string;
   parent?: string;
   subtasks?: FlatItem[];
+  /**
+   * KDO-94 dependencies, already resolved to KEY-N by the caller (which holds
+   * the board): `list` is every blocker still on the board, `blocked` says at
+   * least one of them is not Done. Shaping stays free of board traversal.
+   */
+  blockers?: { list: string[]; blocked: boolean };
 };
 
 /**
@@ -89,6 +95,10 @@ export function leanDetail(raw: any, ctx: BoardCtx, o: DetailOpts): Record<strin
   if (raw.creator) out.creator = ctx.memberEmail.get(raw.creator) ?? raw.creator;
   if (raw.estimateHours != null) out.estimateHours = raw.estimateHours;
   if (raw.visibleAt) out.visibleAt = raw.visibleAt;
+  // Listed even when resolved — the association is part of the ticket's record.
+  // `blocked` is the diagnostic: it is exactly why next_task passed this over.
+  if (o.blockers?.list.length) out.blockedBy = o.blockers.list;
+  if (o.blockers?.blocked) out.blocked = true;
   if (raw.excludedFromRelease) out.excludedFromRelease = true;
   if (o.subtasks) out.subtasks = o.subtasks.map((s) => leanItem(s, ctx));
   return out;

@@ -72,3 +72,40 @@ export function resolveAssignee(bc: any, value: string, botEmail: string | null)
   }
   throw bad(`No member "${value}" on this board. Members: ${emails}.`);
 }
+
+/**
+ * Blocking dependencies (KDO-94), addressed as KEY-N like everything else. A
+ * raw item id passes through when it names something on this board, so an id
+ * read back out of a ticket can be handed straight back in.
+ *
+ * Dependencies are SAME-BOARD by construction — the backend stores bare ids
+ * with no board — so a KEY-N this board does not contain is refused rather
+ * than stored as a reference that can never resolve. An empty list clears
+ * every dependency; that is a list's own natural "none", unlike the ''-clears
+ * convention the scalar fields use.
+ */
+export function resolveBlockedBy(bc: any, values: string[], selfTicket?: string): string[] {
+  const key: string | null = bc?.board?.key ?? null;
+  const items: Array<{ id: string; num: unknown }> = [];
+  for (const s of bc?.stories ?? []) {
+    items.push({ id: s.id, num: s.num });
+    for (const sub of s.subtasks ?? []) items.push({ id: sub.id, num: sub.num });
+  }
+  const self = selfTicket?.toUpperCase();
+  return values.map((v) => {
+    const raw = v.trim();
+    if (self && raw.toUpperCase() === self) {
+      throw bad(`${raw} cannot be blocked by itself.`);
+    }
+    const byId = items.find((i) => i.id === raw);
+    if (byId) return byId.id;
+    const m = raw.match(/^([A-Za-z]{1,10})-(\d+)$/);
+    if (!m) throw bad(`"${raw}" is not a ticket id (expected KEY-N, e.g. KDO-7).`);
+    if (key && m[1].toUpperCase() !== key.toUpperCase()) {
+      throw bad(`${raw} is not on this board (${key}). A blockedBy dependency must be on the same board.`);
+    }
+    const hit = items.find((i) => i.num === Number(m[2]));
+    if (!hit) throw bad(`No ticket ${raw} on this board. A blockedBy dependency must be on the same board.`);
+    return hit.id;
+  });
+}

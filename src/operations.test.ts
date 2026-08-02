@@ -28,6 +28,18 @@ describe('MCP read selections surface the ticket creator', () => {
   }
 });
 
+// KDO-94 blocking dependencies. `blockedBy` must be SELECTED in every read op
+// whose data reaches a caller as a ticket: next_task's eligibility check and
+// get_ticket's detail are both built on it, and an unselected field reads as
+// "nothing blocks this" — which is the exact wrong answer.
+describe('MCP read selections surface blockedBy', () => {
+  for (const [name, op] of Object.entries({ GET_BOARD, ARCHIVED_ITEMS })) {
+    it(`${name} selects blockedBy`, () => {
+      expect(op).toContain('blockedBy');
+    });
+  }
+});
+
 describe('mutation selections are slim', () => {
   const mutations = {
     UPDATE_STORY,

@@ -147,6 +147,54 @@ describe('selectNextTask', () => {
     expect(selectNextTask(released, { kind: 'board' }, 'bot')?.ticket).toBe('TSK-1');
   });
 
+  it('skips a unit whose own blocker is not Done', () => {
+    // s1 (TSK-1) is blocked by s5, a container with an open subtask; the next
+    // eligible unit is TSK-6, s5's own subtask.
+    const blocked = {
+      ...board,
+      stories: [{ ...board.stories[0], blockedBy: ['s5'] }, board.stories[4]],
+    };
+    expect(selectNextTask(blocked, { kind: 'board' }, 'bot')?.ticket).toBe('TSK-6');
+  });
+
+  it('serves the unit once its blocker reaches the last column', () => {
+    // s2 (TSK-2) is the Done standalone in the fixture.
+    const unblocked = { ...board, stories: [{ ...board.stories[0], blockedBy: ['s2'] }] };
+    expect(selectNextTask(unblocked, { kind: 'board' }, 'bot')?.ticket).toBe('TSK-1');
+  });
+
+  it('treats a blocker that is no longer on the board as resolved', () => {
+    const ghost = { ...board, stories: [{ ...board.stories[0], blockedBy: ['gone'] }] };
+    expect(selectNextTask(ghost, { kind: 'board' }, 'bot')?.ticket).toBe('TSK-1');
+  });
+
+  it('skips a subtask whose CONTAINER is blocked', () => {
+    // s5's subtask TSK-6 is workable, but s5 itself waits on the open s1.
+    const blockedContainer = {
+      ...board,
+      stories: [board.stories[0], { ...board.stories[4], blockedBy: ['s1'] }],
+    };
+    // TSK-1 is still free; it is the container's subtask that must not be served.
+    const picked = selectNextTask(blockedContainer, { kind: 'board' }, 'bot');
+    expect(picked?.ticket).toBe('TSK-1');
+    expect(selectNextTask(blockedContainer, { kind: 'story', storyId: 's5' }, 'bot')).toBeNull();
+  });
+
+  it('returns null for a directly-targeted subtask that is blocked', () => {
+    const blockedSub = {
+      ...board,
+      stories: [
+        board.stories[0],
+        {
+          ...board.stories[4],
+          subtasks: [{ ...board.stories[4].subtasks[0], blockedBy: ['s1'] }],
+        },
+      ],
+    };
+    const scope = { kind: 'subtask' as const, storyId: 's5', subtaskId: 'sub1' };
+    expect(selectNextTask(blockedSub, scope, 'bot')).toBeNull();
+  });
+
   it('is unaffected on a board that has no pending-ship tag', () => {
     // The tag is optional: a board that never defined it behaves exactly as before.
     expect(selectNextTask(board, { kind: 'board' }, 'bot')?.ticket).toBe('TSK-1');

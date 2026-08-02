@@ -69,6 +69,12 @@ name and email**, plus `"me"` for the account you logged in as.
 
 Boards are addressed by **key** (e.g. `TSK`); tickets by **`KEY-N`** (e.g. `TSK-42`). `move_ticket` changes a ticket's column (status); `reorder_ticket` changes its priority within its peer group — they're separate on purpose, so neither wipes the other.
 
+A ticket can be **blocked by** other tickets on the same board. `get_ticket` reports
+`blockedBy` (their `KEY-N`s) and `blocked: true` while any of them is unresolved; a
+blocker resolves once it is Done or off the board. `next_task` never returns a blocked
+ticket, nor the subtasks of a blocked container story. Set one with `blockedBy` on
+`update_ticket` / `create_story` / `create_subtask`; `[]` clears.
+
 Comments follow the same rule: **`TSK-42-3` is the third comment on `TSK-42`**, and that
 key is all `edit_comment` and `delete_comment` need — no separate ticket argument. The
 ordinal is never reused, so deleting `TSK-42-3` leaves a gap rather than renumbering the
