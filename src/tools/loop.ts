@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { type Gql, type ToolHost, toolText, resolveBoardId } from './read.js';
 import { resolveTicketRef, requireLive } from '../tickets.js';
+import { buildBlockerIndex, unresolvedBlockers } from '../blocking.js';
 import { GET_BOARD, CREATE_TAG } from '../operations.js';
 
 const KNOWN_TAG_COLORS: Record<string, { colorBg: string; colorText: string }> = {
@@ -117,13 +118,22 @@ export function selectNextTask(bc: any, scope: WorkScope, botSub: string | null)
   // is meaningless to compare across different stories. Column stage matters only at the
   // CONTAINER level, where it decides the tier (started vs untouched) — never between two
   // units of the same tier.
-  const top = unitsFor(bc, scope, cols[0].id).find(({ item }) => {
+  const blockers = buildBlockerIndex(bc);
+
+  const top = unitsFor(bc, scope, cols[0].id).find(({ kind, story, item }) => {
     if (item.columnId === lastCol) return false; // Done
     if (typeof item.visibleAt === 'string' && Date.parse(item.visibleAt) > now) return false; // snoozed
     if (hnId && (item.tags ?? []).includes(hnId)) return false; // human-needed
     if (psId && (item.tags ?? []).includes(psId)) return false; // on the loop branch, awaiting a flush
     const a = item.assignee ?? null;
     if (a && a !== botSub) return false; // assigned to a human
+    // KDO-94: a prerequisite that is not Done (or gone) means this is not
+    // workable yet. A subtask also inherits its CONTAINER's blockers — work
+    // units are never containers, so a dependency drawn on one would otherwise
+    // have no effect at all. Applied in the shared predicate, so it holds at
+    // board, story and single-subtask scope alike: a blocked ticket is not
+    // workable, and how you asked for it does not change that.
+    if (unresolvedBlockers(item, kind === 'subtask' ? story : null, blockers).length) return false;
     return true;
   });
   if (!top) return null;
@@ -169,7 +179,9 @@ export function registerLoopTools(server: ToolHost, gql: Gql, botEmail: string) 
         'For a board it picks in three tiers: (1) subtasks of a STARTED container story (one with a subtask past the first column, incl. Done) — ' +
         'so a container already in flight is finished before anything new is opened; (2) standalone stories; (3) subtasks of untouched containers. ' +
         'On a board where no container has been started, that is simply standalone stories before container swimlanes, as before. ' +
-        'Skips Done, snoozed, human-needed, pending-ship, and tickets assigned to a human. ' +
+        'Skips Done, snoozed, human-needed, pending-ship, blocked, and tickets assigned to a human. ' +
+        'BLOCKED means an unresolved blockedBy dependency — a blocker counts as resolved once it is Done or off the board ' +
+        '(archived/deleted); a subtask is also blocked while its container story is. ' +
         'pending-ship marks a ticket the autonomous loop has finished and parked on its branch awaiting a batched deploy — ' +
         'it is not workable, and the loop clears the tag once the batch ships. Work units are standalone stories and subtasks.',
       inputSchema: { target: z.string().describe('board key/id, or a ticket KEY-N') },
