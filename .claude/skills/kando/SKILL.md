@@ -81,6 +81,29 @@ Older tickets carry `## 🤖 Claude — Plan` / `— Done` sections in their bod
 - A story with **0 subtasks is standalone** — move it directly with `move_ticket`.
 - A story with **≥1 subtask is a container**; its status is **derived from its subtasks**. Moving the container itself does nothing visible — **to progress a container story, move its subtasks.**
 
+## Dependencies (blocked by)
+
+A ticket can be **blocked by** other tickets **on the same board** — the work that must
+land first. `get_ticket` reports them:
+
+- `blockedBy: ["KDO-7","KDO-9"]` — what this ticket waits on. It stays listed after the
+  blocker is finished; the association is part of the record.
+- `blocked: true` — at least one of them is **not resolved yet**.
+
+A blocker counts as **resolved** once it is **Done** (the last column) or **off the
+board** (archived or deleted). A container blocker is Done only when every one of its
+subtasks is.
+
+**Set them by `KEY-N`:** `update_ticket KDO-12 blockedBy:["KDO-7"]`, or pass `blockedBy`
+straight to `create_story` / `create_subtask`. Pass `[]` to clear every dependency
+(unlike the scalar fields, which clear with `""`). A ticket on another board is refused
+— dependencies are same-board only.
+
+**Use one when order is a constraint, not a preference.** Ranking a ticket higher says
+"do this sooner"; `blockedBy` says "this cannot be done yet", and `next_task` enforces
+it — a blocked ticket is never served, and neither are the subtasks of a blocked
+container story.
+
 ## Finding work
 
 `search_tickets` with a board plus any of `column` (label or id), `assignee` (email, `userSub`, or `"me"`), `tag` (name or id), `release` (name or id), `text` (matches title + description). Filters combine with AND. `get_board` gives the whole board when you need the full picture.

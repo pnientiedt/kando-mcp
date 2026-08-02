@@ -56,6 +56,7 @@ Runs **after** the Specification is written, and **only when the target is a sto
      **Out of scope:** …
      ```
    - `ensure_tag <board> refined`, then `update_ticket` the new subtask with `tags: ["refined"]` (keep any tags it already has).
+   - **If a step genuinely cannot start until an earlier one lands, say so with a dependency:** pass `blockedBy: ["<the earlier subtask's KEY-N>"]` to `create_subtask` (you have its `KEY-N` — you just created it). Rank is a preference; `blockedBy` is a constraint `/kando-loop` actually enforces, since `next_task` never serves a blocked ticket. Use it only for a real prerequisite, not to re-state the order you already created them in.
    Create them in discussion order so board rank matches the sequence — `/kando-loop <STORY>` then works them top-to-bottom, each to its own Acceptance criteria.
 5. Then go to **Finish** below.
 
