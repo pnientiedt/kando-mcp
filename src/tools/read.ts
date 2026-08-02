@@ -4,6 +4,7 @@ import { MY_BOARDS, GET_BOARD, ARCHIVED_ITEMS, COMMENTS } from '../operations.js
 import { flattenBoard, filterItems, resolveTicketRef, type TicketRef } from '../tickets.js';
 import { buildContext, leanItem, leanDetail, leanComments, COMMENT_CAP } from '../shape.js';
 import { resolveTagIds, resolveReleaseId, resolveAssignee } from '../resolve.js';
+import { buildBlockerIndex, unresolvedBlockers, blockerTickets } from '../blocking.js';
 
 export type Gql = GqlClient;
 
@@ -232,6 +233,14 @@ export function registerReadTools(server: ToolHost, gql: Gql, botEmail: string |
         if (earlier) out.earlierComments = earlier;
         return out;
       };
+      const bIndex = buildBlockerIndex(bc);
+      // A subtask inherits its container's blockers for the `blocked` verdict —
+      // the same rule next_task applies — but `blockedBy` names only its own,
+      // which is what somebody actually linked to this ticket.
+      const blockersFor = (raw: any, parent: any | null) => ({
+        list: blockerTickets(raw, bIndex),
+        blocked: unresolvedBlockers(raw, parent, bIndex).length > 0,
+      });
       const story = (bc.stories ?? []).find((s: any) => s.id === ref.storyId);
       if (!story) throw new KandoError('That story no longer exists.', 'NOT_FOUND');
       if (ref.subtaskId) {
@@ -242,6 +251,7 @@ export function registerReadTools(server: ToolHost, gql: Gql, botEmail: string |
           ticket: ctx.ticketOf.get(sub.id) ?? null,
           columnLabel: labelOf.get(sub.columnId) ?? sub.columnId,
           parent: ctx.ticketOf.get(story.id),
+          blockers: blockersFor(sub, story),
         })));
       }
       // Reuse flattenBoard so the subtask list obeys the same archived rules as
@@ -252,6 +262,7 @@ export function registerReadTools(server: ToolHost, gql: Gql, botEmail: string |
         ticket: ctx.ticketOf.get(story.id) ?? null,
         columnLabel: labelOf.get(story.columnId) ?? story.columnId,
         subtasks: subs.length ? subs : undefined,
+        blockers: blockersFor(story, null),
       })));
     },
   );
