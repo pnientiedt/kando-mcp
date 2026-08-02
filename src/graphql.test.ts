@@ -38,6 +38,10 @@ describe('graphql client', () => {
     expect(mapErrorToken('NOT_FOUND')).toMatch(/no longer exists/i);
     expect(mapErrorToken('WAT')).toMatch(/something went wrong/i);
     expect(mapErrorToken(undefined)).toMatch(/something went wrong/i);
+    // A read that fanned out too far. Without an entry it fell through to the
+    // write-shaped fallback ("the change was not saved"), which is wrong twice.
+    expect(mapErrorToken('TOO_BROAD')).toMatch(/boards/i);
+    expect(mapErrorToken('TOO_BROAD')).not.toMatch(/not saved/i);
   });
 
   it('retries a 5xx and then succeeds', async () => {

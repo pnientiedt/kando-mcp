@@ -176,3 +176,19 @@ export const DELETE_COMMENT = `
   mutation ($boardId: ID!, $itemId: ID!, $commentId: ID!) {
     deleteComment(boardId: $boardId, itemId: $itemId, commentId: $commentId) { deletedId }
   }`;
+
+// KDO-93: cross-board, server-side filtered ticket search, built for this suite.
+// The selection is exactly what a lean row needs: no `boardId`/`boardName` (the
+// `KEY-N` names the board), no `columnId` (the label is what we show), no `kind`
+// (`parent` and `subtaskCount` already say it), and there is no `body` to ask for.
+export const GET_TICKETS = `
+  query GetTickets($filter: TicketFilter, $limit: Int) {
+    getTickets(filter: $filter, limit: $limit) {
+      items {
+        ticket parent title columnLabel subtaskCount
+        tags releaseName assignee assigneeEmail visibleAt archivedAt
+      }
+      truncated
+      boardsSearched
+    }
+  }`;

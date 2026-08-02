@@ -142,22 +142,110 @@ describe('get_board is lean', () => {
   });
 });
 
-describe('search_tickets is lean', () => {
-  it('filters on body text but never returns it', async () => {
-    const { host, tools } = captureHost();
-    registerReadTools(host, gqlFor(fatBoard(3)) as never);
-    const text = (await tools.search_tickets({ board: 'KDO', text: 'XXX' })).content[0].text;
-    expect(JSON.parse(text)).toHaveLength(3);
-    expect(text).not.toContain('"body"');
+describe('search_tickets', () => {
+  /** One `getTickets` page: a container story and a snoozed subtask. */
+  const page = (over: Record<string, unknown> = {}) => ({
+    getTickets: {
+      items: [
+        {
+          ticket: 'KDO-1', parent: null, title: 'Container', columnLabel: 'Open', subtaskCount: 2,
+          tags: ['claude'], releaseName: null, assignee: 'sub-1', assigneeEmail: 'bot@example.com',
+          visibleAt: null, archivedAt: null,
+        },
+        {
+          ticket: 'KDO-2', parent: 'KDO-1', title: 'Child', columnLabel: 'Open', subtaskCount: 0,
+          tags: [], releaseName: null, assignee: null, assigneeEmail: null,
+          visibleAt: '2999-01-01T00:00:00Z', archivedAt: null,
+        },
+      ],
+      truncated: false,
+      boardsSearched: 1,
+      ...over,
+    },
   });
 
-  it('accepts a tag NAME for the tag filter', async () => {
+  const capture = (data: any) => {
+    const calls: Array<{ query: string; variables: any }> = [];
+    const gql = vi.fn(async (query: string, variables: any) => {
+      calls.push({ query, variables });
+      if (query.includes('myBoards')) {
+        return { myBoards: [{ id: 'b1', key: 'KDO' }, { id: 'b2', key: 'TSK' }] };
+      }
+      return data;
+    });
+    return { calls, gql };
+  };
+
+  it('queries getTickets once and never getBoard — the whole point of the rewrite', async () => {
+    const { calls, gql } = capture(page());
     const { host, tools } = captureHost();
-    registerReadTools(host, gqlFor(fatBoard(3)) as never);
-    const out = JSON.parse(
-      (await tools.search_tickets({ board: 'KDO', tag: 'refined' })).content[0].text,
-    );
-    expect(out).toHaveLength(3);
+    registerReadTools(host, gql as never);
+
+    const out = JSON.parse((await tools.search_tickets({})).content[0].text);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].query).toContain('getTickets');
+    expect(calls.some((c) => c.query.includes('getBoard'))).toBe(false);
+    expect(out.tickets).toEqual([
+      { ticket: 'KDO-1', title: 'Container', col: 'Open', tags: ['claude'], assignee: 'bot@example.com', subtasks: 2 },
+      { ticket: 'KDO-2', title: 'Child', col: 'Open', parent: 'KDO-1', snoozed: true },
+    ]);
+  });
+
+  it('sends no filter and no limit when nothing was asked for', async () => {
+    const { calls, gql } = capture(page());
+    const { host, tools } = captureHost();
+    registerReadTools(host, gql as never);
+
+    await tools.search_tickets({});
+    expect(calls[0].variables).toEqual({});
+  });
+
+  it('resolves board KEYS to ids in one myBoards read', async () => {
+    const { calls, gql } = capture(page());
+    const { host, tools } = captureHost();
+    registerReadTools(host, gql as never);
+
+    await tools.search_tickets({ boards: ['KDO', 'TSK'] });
+    expect(calls.filter((c) => c.query.includes('myBoards'))).toHaveLength(1);
+    expect(calls.find((c) => c.query.includes('getTickets'))!.variables.filter.boardIds).toEqual(['b1', 'b2']);
+  });
+
+  it('maps the filters and limit onto the query', async () => {
+    const { calls, gql } = capture(page());
+    const { host, tools } = captureHost();
+    registerReadTools(host, gql as never);
+
+    await tools.search_tickets({ assignees: ['me'], archived: 'all', kind: 'story', limit: 5 });
+    const q = calls.find((c) => c.query.includes('getTickets'))!;
+    expect(q.variables).toEqual({
+      filter: { assignees: ['me'], archived: 'ALL', kind: 'STORY' },
+      limit: 5,
+    });
+  });
+
+  it('reports truncation and the fan-out size, and stays silent when neither says anything', async () => {
+    const { gql } = capture(page({ truncated: true, boardsSearched: 4 }));
+    const { host, tools } = captureHost();
+    registerReadTools(host, gql as never);
+    const loud = JSON.parse((await tools.search_tickets({})).content[0].text);
+    expect(loud.truncated).toBe(true);
+    expect(loud.boards).toBe(4);
+
+    const { gql: gql2 } = capture(page());
+    const { host: host2, tools: tools2 } = captureHost();
+    registerReadTools(host2, gql2 as never);
+    const quiet = JSON.parse((await tools2.search_tickets({})).content[0].text);
+    expect(quiet).not.toHaveProperty('truncated');
+    expect(quiet).not.toHaveProperty('boards');
+  });
+
+  it('never returns a body', async () => {
+    const { gql } = capture(page());
+    const { host, tools } = captureHost();
+    registerReadTools(host, gql as never);
+    const text = (await tools.search_tickets({ text: 'XXX' })).content[0].text;
+    expect(text).not.toContain('"body"');
   });
 });
 

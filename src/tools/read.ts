@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import { KandoError, type GqlClient } from '../graphql.js';
-import { MY_BOARDS, GET_BOARD, ARCHIVED_ITEMS, COMMENTS } from '../operations.js';
-import { flattenBoard, filterItems, resolveTicketRef, type TicketRef } from '../tickets.js';
+import { MY_BOARDS, GET_BOARD, ARCHIVED_ITEMS, COMMENTS, GET_TICKETS } from '../operations.js';
+import { buildTicketFilter, leanSummary, type SearchInput } from '../ticketSearch.js';
+import { flattenBoard, resolveTicketRef, type TicketRef } from '../tickets.js';
 import { buildContext, leanItem, leanDetail, leanComments, COMMENT_CAP } from '../shape.js';
-import { resolveTagIds, resolveReleaseId, resolveAssignee } from '../resolve.js';
 import { buildBlockerIndex, unresolvedBlockers, blockerTickets } from '../blocking.js';
 
 export type Gql = GqlClient;
@@ -120,6 +120,23 @@ export async function resolveBoardId(gql: Gql, board: string): Promise<string> {
   return match.id;
 }
 
+/**
+ * Board KEYS to ids for a whole list, in ONE `myBoards` read — `resolveBoardId`
+ * per entry would pay for that read once per board. A value that is not a key
+ * passes through as a raw id, same as the single form.
+ */
+export async function resolveBoardIds(gql: Gql, boards: string[]): Promise<string[]> {
+  if (!boards.some((b) => KEY_RE.test(b))) return boards;
+  const data = await gql(MY_BOARDS);
+  const byKey = new Map<string, string>((data.myBoards ?? []).map((b: any) => [b.key, b.id]));
+  return boards.map((b) => {
+    if (!KEY_RE.test(b)) return b;
+    const id = byKey.get(b);
+    if (!id) throw new KandoError(`No board with key "${b}" is visible to the bot.`, 'NOT_FOUND');
+    return id;
+  });
+}
+
 export type BoardField = 'board' | 'items' | 'tags' | 'releases' | 'members';
 
 /**
@@ -139,7 +156,9 @@ export function selectBoardFields<T extends Record<string, unknown>>(
   return out;
 }
 
-export function registerReadTools(server: ToolHost, gql: Gql, botEmail: string | null = null) {
+// No `botEmail`: the read tools stopped needing it when search_tickets moved to
+// getTickets, which resolves the "me" sentinel server-side.
+export function registerReadTools(server: ToolHost, gql: Gql) {
   server.registerTool(
     'list_boards',
     { description: 'List the Kando boards the bot can see (call this first).', inputSchema: {} },
@@ -271,31 +290,39 @@ export function registerReadTools(server: ToolHost, gql: Gql, botEmail: string |
     'search_tickets',
     {
       description:
-        "Search a board's non-archived tickets. Filters combine with AND. Returns " +
-        'identifiers only — use get_ticket for a body (text still searches bodies).',
+        'Search tickets ACROSS BOARDS, filtered server-side. Omit `boards` to search every board the bot ' +
+        'can see. Filters combine with AND; tag/release/column names are matched per board, so one name ' +
+        'works across all of them. Returns identifiers only — use get_ticket for a body (text still ' +
+        'searches bodies). `truncated: true` means the result was cut off: narrow the query, there is no ' +
+        'next page. A row with `subtasks: N` is a container story; move its subtasks, not the story.',
       inputSchema: {
-        board: z.string().describe('board key or id'),
-        column: z.string().optional().describe('column label or id'),
-        assignee: z.string().optional().describe('member email, userSub, or "me"'),
-        tag: z.string().optional().describe('tag name or id'),
-        release: z.string().optional().describe('release name or id'),
+        boards: z.array(z.string()).optional().describe('board keys or ids; omit to search every board (max 25)'),
+        tags: z.array(z.string()).optional().describe('tag NAMES'),
+        tagMode: z.enum(['any', 'all']).optional().describe('any (default) = has one of the tags; all = has every one'),
+        releases: z.array(z.string()).optional().describe('release names'),
+        assignees: z.array(z.string()).optional().describe('member userSubs, or "me"'),
+        columns: z.array(z.string()).optional().describe('column labels or ids'),
         text: z.string().optional().describe('matches title + description'),
+        kind: z.enum(['story', 'subtask']).optional(),
+        archived: z.enum(['live', 'archived', 'all']).optional().describe('default live'),
+        snoozed: z.enum(['show', 'hide', 'only']).optional().describe('default show — a search hides nothing'),
+        limit: z.number().optional().describe('1-500, default 100'),
       },
     },
-    async ({ board, ...f }) => {
-      const boardId = await resolveBoardId(gql, board);
-      const data = await gql(GET_BOARD, { boardId });
-      const bc = data.getBoard;
-      const ctx = buildContext(bc);
-      // The filters still run against the FULL items — `text` matches bodies
-      // server-side — but only the lean projection goes back over the wire.
-      const filters = {
-        ...f,
-        ...(f.tag ? { tag: resolveTagIds(bc, [f.tag])[0] } : {}),
-        ...(f.release ? { release: resolveReleaseId(bc, f.release) } : {}),
-        ...(f.assignee ? { assignee: resolveAssignee(bc, f.assignee, botEmail) } : {}),
-      };
-      return toolText(filterItems(flattenBoard(bc), filters).map((i) => leanItem(i, ctx)));
+    async ({ boards, limit, ...f }) => {
+      const boardIds = boards?.length ? await resolveBoardIds(gql, boards) : undefined;
+      const filter = buildTicketFilter(f as SearchInput, boardIds);
+      const variables: Record<string, unknown> = {};
+      // Omitted, not null: the backend owns every default, and sending an empty
+      // filter object would be a filter that says nothing.
+      if (Object.keys(filter).length) variables.filter = filter;
+      if (limit !== undefined) variables.limit = limit;
+      const page = (await gql(GET_TICKETS, variables)).getTickets;
+      const out: Record<string, unknown> = { tickets: (page.items ?? []).map(leanSummary) };
+      if (page.truncated) out.truncated = true;
+      // The fan-out size is worth saying only when it was a fan-out.
+      if ((page.boardsSearched ?? 0) > 1) out.boards = page.boardsSearched;
+      return toolText(out);
     },
   );
 
