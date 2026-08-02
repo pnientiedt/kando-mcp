@@ -93,7 +93,7 @@ fetch per interruption — still far below one per worker.
    - If the last **3** results in a row were `human-needed` → **flush, then stop (circuit breaker)**.
 3. Record the ticket's **base sha** (`git rev-parse HEAD`, on the loop branch) — one line of output, and the reviewer's diff range for every round of this ticket. Then dispatch ONE worker subagent (Agent tool, **`subagent_type: kando-worker`**, **`model: sonnet`**, **`run_in_background: false`**) with the **worker prompt** below for the ticket `KEY-N`, substituting this board's cached `<in-progress column>` and `<last column>` into it. It works TDD-first, commits **locally (no push)**, and reports `ready-for-review` (or `blocked`).
 4. **Independent review inner loop** (max **3** rounds) — while the worker reports `ready-for-review`:
-   a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, **`subagent_type: kando-reviewer`**, **`model: sonnet`**, **`run_in_background: false`**) with the **reviewer prompt** below, giving it the ticket intent and the **diff range** `<base-sha>..HEAD`. **Never run `git diff` yourself and never paste a diff into the prompt** — that pays for it twice, once in your context and once in the reviewer's, and you never read it. The reviewer runs the diff itself. Every round uses the SAME base sha, so each fresh reviewer sees the complete ticket diff, not just the latest fix. It returns a BLOCKING list and an ADVISORY list.
+   a. Dispatch a **fresh, independent reviewer subagent** (Agent tool, **`subagent_type: kando-reviewer`**, **`model: sonnet`**, **`run_in_background: false`**) with the **reviewer prompt** below, giving it the ticket **key** and the **diff range** `<base-sha>..HEAD`. **Never run `git diff` yourself, never paste a diff into the prompt, and never paste the ticket body into it either** — that pays for both twice, once in your context and once in the reviewer's, and you never read them. The reviewer runs the diff and reads the ticket itself. Every round uses the SAME base sha, so each fresh reviewer sees the complete ticket diff, not just the latest fix. It returns a BLOCKING list and an ADVISORY list.
    b. **No blocking findings** → SendMessage the worker: `review passed — push the branch`. Go to step 5.
    c. **Blocking findings** → SendMessage the worker the findings. It fixes, recommits, and reports `ready-for-review` again. `round++`.
    d. If `round > 3` and still blocking → SendMessage the worker: `block it: <findings>`. It tags `human-needed` + writes a Blocked note; treat the result as `blocked`.
@@ -266,9 +266,10 @@ gate exists to make, and the last thing to cheapen.
 `kando-mcp init` installs two agent definitions into `.claude/agents/`, and the loop
 dispatches them by `subagent_type`:
 
-- **`kando-reviewer`** has no board tools and no edit tools. It *cannot* move a ticket or
-  push, so the independence the review gate depends on is enforced by its toolset rather
-  than by asking nicely.
+- **`kando-reviewer`** holds exactly two board tools — `get_ticket` to read what was
+  asked and `add_comment` to record what it found — and no edit tools. It *cannot* move a
+  ticket, tag it or push, so the independence the review gate depends on is enforced by
+  its toolset rather than by asking nicely.
 - **`kando-worker`** holds 8 of the server's 21 board tools — enough to read a ticket,
   update and move the one it was given, ensure a tag, and create a story or subtask to
   record a finding. It has **no** `delete_ticket`, `archive_ticket`, `delete_tag`, or
@@ -307,13 +308,13 @@ Dispatch a general-purpose subagent with this instruction (substitute the real `
 
 Dispatch a FRESH general-purpose subagent (it did NOT write this code) with:
 
-> You are an INDEPENDENT code reviewer for Kando ticket **KEY-N**. You did not write this change; do not trust any implementer narrative. You are given the ticket **intent** (title/body/`plan` comment) and a **diff range**. **Run `git diff <base-sha>..HEAD` yourself** — that is the complete change under review. Review the diff directly and sort findings into two buckets and report both. (Do NOT try to invoke the `/code-review` skill — it can't be called by a subagent; apply code-review principles yourself.)
+> You are an INDEPENDENT code reviewer for Kando ticket **KEY-N**. You did not write this change; do not trust any implementer narrative. You are given the ticket **key** and a **diff range**. **Read the ticket yourself first — `get_ticket KEY-N`** — its body is the human's spec and its comments hold the worker's `plan` and any earlier `review · pass N`; judge adherence against that, never against a summary written by the side you are checking. **Then run `git diff <base-sha>..HEAD` yourself** — that is the complete change under review. Review the diff directly and sort findings into two buckets and report both. (Do NOT try to invoke the `/code-review` skill — it can't be called by a subagent; apply code-review principles yourself.)
 > - **BLOCKING** (must be fixed before this ships):
 >   - **correctness** — real bugs, logic errors, unhandled edge cases in the diff;
 >   - **adherence** — the change does not actually do what the ticket asked, or cuts corners; OR the tests are trivial / gamed / do not exercise the change / were clearly not written test-first; OR the change claims a "no testable surface" TDD exemption but a testable surface plainly exists.
 > - **ADVISORY** (do NOT block): quality — simplification, reuse, efficiency, style.
 > Be strict on adherence and test quality — catching shallow work is the entire point of this gate. Output the BLOCKING list (empty if clean) and the ADVISORY list, each finding one line with `file:line`.
-> **Then post the same findings to the board:** `add_comment KEY-N`, opening the comment with `review · pass N`. Do this on **every** pass, including one that is clean — a ticket with no review comment must mean "not reviewed", never "reviewed and fine". You write them yourself so they cannot be softened in transit. `add_comment` is the only board tool you may use: do not move, tag, update or close anything, and never edit or delete a comment, including your own.
+> **Then post the same findings to the board:** `add_comment KEY-N`, opening the comment with `review · pass N`. Do this on **every** pass, including one that is clean — a ticket with no review comment must mean "not reviewed", never "reviewed and fine". You write them yourself so they cannot be softened in transit. `get_ticket` and `add_comment` are the only board tools you may use: do not move, tag, update or close anything, and never edit or delete a comment, including your own.
 
 ## The `human-needed` bar is HIGH — solve it yourself first
 
