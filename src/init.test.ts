@@ -52,10 +52,27 @@ describe('ensureToolPermissions', () => {
 
   it('never pre-grants a destructive tool', () => {
     // The loop runs unattended with standing push authorization. Granting these by
-    // default would put a permanent delete one stray instruction away.
-    for (const forbidden of ['delete_ticket', 'delete_tag', 'delete_release', 'archive_ticket']) {
+    // default would put a permanent delete one stray instruction away. The comment
+    // pair is here for a second reason: the record of what was planned and what a
+    // reviewer found is append-only, so nothing in the loop may rewrite it.
+    for (const forbidden of [
+      'delete_ticket',
+      'delete_tag',
+      'delete_release',
+      'archive_ticket',
+      'delete_comment',
+      'edit_comment',
+    ]) {
       expect(LOOP_TOOL_PERMISSIONS).not.toContain(`mcp__kando__${forbidden}`);
     }
+  });
+
+  it('pre-grants the comment tools every ticket goes through', () => {
+    // Worker writes `plan` and `done`, reviewer writes `review · pass N`, both read
+    // the thread back. A prompt on the first comment is a silent wait in an
+    // unattended run — the exact failure the pre-grant list exists to remove.
+    expect(LOOP_TOOL_PERMISSIONS).toContain('mcp__kando__add_comment');
+    expect(LOOP_TOOL_PERMISSIONS).toContain('mcp__kando__list_comments');
   });
 });
 

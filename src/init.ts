@@ -53,6 +53,10 @@ export function ensureLoopAuthorization(text: string): string {
  * authorization to push should not be one stray instruction away from any of them. The
  * shipped `kando-worker` agent also withholds them, so this list is the second of two
  * independent barriers rather than the only one.
+ *
+ * `edit_comment` and `delete_comment` are absent for a related reason: the comment thread
+ * is the loop's record of what was planned and what the reviewer found, and a record the
+ * run can rewrite is worth less than one it can only append to.
  */
 export const LOOP_TOOL_PERMISSIONS = [
   'mcp__kando__list_boards',
@@ -65,6 +69,8 @@ export const LOOP_TOOL_PERMISSIONS = [
   'mcp__kando__move_ticket',
   'mcp__kando__create_story',
   'mcp__kando__create_subtask',
+  'mcp__kando__list_comments',
+  'mcp__kando__add_comment',
 ];
 
 /** Add tool permissions to settings.permissions.allow. Idempotent; preserves everything else. */
