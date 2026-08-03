@@ -5,6 +5,7 @@ import { makeGqlClient, type GqlClient } from './graphql.js';
 import { registerReadTools, type ToolHost } from './tools/read.js';
 import { registerTicketTools } from './tools/tickets.js';
 import { registerCommentTools } from './tools/comments.js';
+import { registerLoopTools } from './tools/loop.js';
 
 /**
  * Live smoke test against a deployed Kando stage. Targets DEV by default and
@@ -54,6 +55,7 @@ describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
     registerReadTools(host, gql);
     registerTicketTools(host, gql);
     registerCommentTools(host, gql);
+    registerLoopTools(host, gql);
 
     boardKey = randKey();
     const created = await gql(CREATE_BOARD, { name: `mcp-e2e ${boardKey}`, key: boardKey });
@@ -118,6 +120,21 @@ describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
     const afterRes = await tools.get_board({ board: boardKey });
     const after = JSON.parse(afterRes.content[0].text);
     expect(after.items.some((i: any) => i.ticket === ticket)).toBe(false);
+  }, 30_000);
+
+  /**
+   * KDO-99 moved task selection into the backend; this is the only check that
+   * the query, its arguments and its enum values are real. A stub cannot make
+   * that claim — it would happily answer a query the schema rejects.
+   */
+  it('next_task asks the deployed backend and gets the workable ticket', async () => {
+    const created = JSON.parse(
+      (await tools.create_story({ board: boardKey, title: 'e2e next_task' })).content[0].text,
+    );
+    const out = JSON.parse((await tools.next_task({ target: boardKey })).content[0].text);
+    expect(out.ticket).toBe(created.ticket);
+    expect(out.kind).toBe('story');
+    expect(out).not.toHaveProperty('none');
   }, 30_000);
 
   /**

@@ -70,9 +70,11 @@ name and email**, plus `"me"` for the account you logged in as.
 Boards are addressed by **key** (e.g. `TSK`); tickets by **`KEY-N`** (e.g. `TSK-42`). `move_ticket` changes a ticket's column (status); `reorder_ticket` changes its priority within its peer group — they're separate on purpose, so neither wipes the other.
 
 A ticket can be **blocked by** other tickets on the same board. `get_ticket` reports
-`blockedBy` (their `KEY-N`s) and `blocked: true` while any of them is unresolved; a
-blocker resolves once it is Done or off the board. `next_task` never returns a blocked
-ticket, nor the subtasks of a blocked container story. Set one with `blockedBy` on
+`blockedBy` (their `KEY-N`s) and `blocked: true` while any of them is unresolved;
+whether a blocker still counts is resolved by Kando itself (Done, archived or deleted
+stops blocking), so every tool agrees. `search_tickets` reports `blocked` on each row,
+and `next_task` never returns a blocked ticket, nor the subtasks of a blocked container
+story. Set one with `blockedBy` on
 `update_ticket` / `create_story` / `create_subtask`; `[]` clears.
 
 `search_tickets` searches **across boards** (omit `boards` for all of them), filtered

@@ -90,9 +90,10 @@ land first. `get_ticket` reports them:
   blocker is finished; the association is part of the record.
 - `blocked: true` — at least one of them is **not resolved yet**.
 
-A blocker counts as **resolved** once it is **Done** (the last column) or **off the
-board** (archived or deleted). A container blocker is Done only when every one of its
-subtasks is.
+**Kando decides what still blocks, not you.** A blocker stops counting once it is Done,
+archived or deleted — resolved in one place in the backend, so `get_ticket`,
+`search_tickets` and `next_task` can never disagree. Read `blocked`; never work it out
+from a blocker's column yourself.
 
 **Set them by `KEY-N`:** `update_ticket KDO-12 blockedBy:["KDO-7"]`, or pass `blockedBy`
 straight to `create_story` / `create_subtask`. Pass `[]` to clear every dependency
@@ -103,6 +104,9 @@ straight to `create_story` / `create_subtask`. Pass `[]` to clear every dependen
 "do this sooner"; `blockedBy` says "this cannot be done yet", and `next_task` enforces
 it — a blocked ticket is never served, and neither are the subtasks of a blocked
 container story.
+
+`search_tickets` reports `blocked` too, so a list tells you which rows are unworkable
+without a `get_ticket` per row.
 
 ## Finding work
 
