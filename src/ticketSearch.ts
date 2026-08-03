@@ -61,6 +61,8 @@ export type LeanRow = {
   release?: string;
   subtasks?: number;
   archivedAt?: string;
+  blockedBy?: string[];
+  blocked?: boolean;
 };
 
 /**
@@ -84,5 +86,10 @@ export function leanSummary(s: any): LeanRow {
   if (s.subtaskCount > 0) out.subtasks = s.subtaskCount;
   // The sort is by KEY-N, so recency is no longer conveyed by position.
   if (s.archivedAt) out.archivedAt = s.archivedAt;
+  // KDO-96: both already KEY-N from the server. `blockedBy` is the stored
+  // relation; `blocked` is the server's verdict on whether any of it still
+  // stands (KDO-98's activeBlockedBy) — never recomputed here.
+  if (s.blockedBy?.length) out.blockedBy = s.blockedBy;
+  if (s.activeBlockedBy?.length) out.blocked = true;
   return out;
 }

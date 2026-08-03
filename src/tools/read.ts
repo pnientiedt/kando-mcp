@@ -4,7 +4,6 @@ import { MY_BOARDS, GET_BOARD, ARCHIVED_ITEMS, COMMENTS, GET_TICKETS } from '../
 import { buildTicketFilter, leanSummary, type SearchInput } from '../ticketSearch.js';
 import { flattenBoard, resolveTicketRef, type TicketRef } from '../tickets.js';
 import { buildContext, leanItem, leanDetail, leanComments, COMMENT_CAP } from '../shape.js';
-import { buildBlockerIndex, unresolvedBlockers, blockerTickets } from '../blocking.js';
 
 export type Gql = GqlClient;
 
@@ -252,13 +251,17 @@ export function registerReadTools(server: ToolHost, gql: Gql) {
         if (earlier) out.earlierComments = earlier;
         return out;
       };
-      const bIndex = buildBlockerIndex(bc);
-      // A subtask inherits its container's blockers for the `blocked` verdict —
-      // the same rule next_task applies — but `blockedBy` names only its own,
-      // which is what somebody actually linked to this ticket.
-      const blockersFor = (raw: any, parent: any | null) => ({
-        list: blockerTickets(raw, bIndex),
-        blocked: unresolvedBlockers(raw, parent, bIndex).length > 0,
+      // KDO-97/98: "is this actually blocking?" is resolved in the backend —
+      // `activeBlockedBy` is the subset still genuinely outstanding, shared by
+      // getBoard/getTickets/nextTask. We report it, never re-derive it.
+      // `blockedBy` stays the raw stored relation: the record of what was linked.
+      // An id ctx cannot name is an archived blocker (getBoard returns no
+      // archived rows) — dropped rather than rendered as a broken reference.
+      const blockersFor = (raw: any) => ({
+        list: (raw.blockedBy ?? [])
+          .map((id: string) => ctx.ticketOf.get(id))
+          .filter((t: string | undefined): t is string => t != null),
+        blocked: (raw.activeBlockedBy ?? []).length > 0,
       });
       const story = (bc.stories ?? []).find((s: any) => s.id === ref.storyId);
       if (!story) throw new KandoError('That story no longer exists.', 'NOT_FOUND');
@@ -270,7 +273,7 @@ export function registerReadTools(server: ToolHost, gql: Gql) {
           ticket: ctx.ticketOf.get(sub.id) ?? null,
           columnLabel: labelOf.get(sub.columnId) ?? sub.columnId,
           parent: ctx.ticketOf.get(story.id),
-          blockers: blockersFor(sub, story),
+          blockers: blockersFor(sub),
         })));
       }
       // Reuse flattenBoard so the subtask list obeys the same archived rules as
@@ -281,7 +284,7 @@ export function registerReadTools(server: ToolHost, gql: Gql) {
         ticket: ctx.ticketOf.get(story.id) ?? null,
         columnLabel: labelOf.get(story.columnId) ?? story.columnId,
         subtasks: subs.length ? subs : undefined,
-        blockers: blockersFor(story, null),
+        blockers: blockersFor(story),
       })));
     },
   );

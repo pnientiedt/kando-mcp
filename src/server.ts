@@ -20,6 +20,6 @@ export function buildServer(
   registerTicketTools(host, gql, opts.email ?? null);
   registerRegistryTools(host, gql);
   registerCommentTools(host, gql);
-  registerLoopTools(host, gql, opts.email ?? '');
+  registerLoopTools(host, gql);
   return server;
 }
