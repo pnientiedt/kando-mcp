@@ -603,9 +603,12 @@ describe('get_ticket dependencies', () => {
       releases: [],
       members: [],
       stories: [
-        { id: 's1', num: 1, title: 'Blocked one', body: 'B', columnId: 'c1', tags: [], blockedBy: ['s2', 's3'], subtasks: [] },
-        { id: 's2', num: 2, title: 'Open blocker', columnId: 'c1', tags: [], blockedBy: [], subtasks: [] },
-        { id: 's3', num: 3, title: 'Done blocker', columnId: 'c2', tags: [], blockedBy: [], subtasks: [] },
+        {
+          id: 's1', num: 1, title: 'Blocked one', body: 'B', columnId: 'c1', tags: [],
+          blockedBy: ['s2', 's3'], activeBlockedBy: ['s2'], subtasks: [],
+        },
+        { id: 's2', num: 2, title: 'Open blocker', columnId: 'c1', tags: [], blockedBy: [], activeBlockedBy: [], subtasks: [] },
+        { id: 's3', num: 3, title: 'Done blocker', columnId: 'c2', tags: [], blockedBy: [], activeBlockedBy: [], subtasks: [] },
       ],
     },
   };
@@ -619,7 +622,7 @@ describe('get_ticket dependencies', () => {
       return bc;
     });
 
-  it('lists both blockers and flags the ticket blocked while one is open', async () => {
+  it('lists the stored relation and flags blocked from activeBlockedBy', async () => {
     const { host, tools } = captureHost();
     registerReadTools(host, stubFor(boardWithBlockers) as never);
     const out = JSON.parse((await tools.get_ticket({ ticket: 'KDO-1' })).content[0].text);
@@ -627,11 +630,14 @@ describe('get_ticket dependencies', () => {
     expect(out.blocked).toBe(true);
   });
 
-  it('drops the flag once every blocker is Done', async () => {
-    const done = structuredClone(boardWithBlockers);
-    done.getBoard.stories[1].columnId = 'c2';
+  it('trusts an EMPTY activeBlockedBy even while a blocker sits in a live column', async () => {
+    // The proof the derivation moved: s2 is still in `c1`, which the old
+    // client-side rule would have called blocking. The server says otherwise,
+    // and the server is the one decision point now (KDO-97/98).
+    const server = structuredClone(boardWithBlockers);
+    server.getBoard.stories[0].activeBlockedBy = [];
     const { host, tools } = captureHost();
-    registerReadTools(host, stubFor(done) as never);
+    registerReadTools(host, stubFor(server) as never);
     const out = JSON.parse((await tools.get_ticket({ ticket: 'KDO-1' })).content[0].text);
     expect(out.blockedBy).toEqual(['KDO-2', 'KDO-3']);
     expect(out).not.toHaveProperty('blocked');

@@ -5,11 +5,11 @@ const columnFields = `id label order`;
 
 const subtaskFields = `
   id num boardId storyId title body tags columnId rank
-  releaseId estimateHours excludedFromRelease visibleAt assignee creator archivedAt blockedBy`;
+  releaseId estimateHours excludedFromRelease visibleAt assignee creator archivedAt blockedBy activeBlockedBy`;
 
 const storyFields = `
   id num boardId title body tags columnId rank
-  releaseId estimateHours visibleAt assignee creator archivedAt blockedBy
+  releaseId estimateHours visibleAt assignee creator archivedAt blockedBy activeBlockedBy
   subtasks { ${subtaskFields} }`;
 
 const boardFields = `id name key role storyCount columns { ${columnFields} }`;
@@ -187,8 +187,21 @@ export const GET_TICKETS = `
       items {
         ticket parent title columnLabel subtaskCount
         tags releaseName assignee assigneeEmail visibleAt archivedAt
+        blockedBy activeBlockedBy
       }
       truncated
       boardsSearched
+    }
+  }`;
+
+// KDO-99: the loop's task-selection rule, server-side. `excludeTags` are NAMES,
+// resolved per board — the loop's `human-needed`/`pending-ship` conventions stay
+// the caller's, not Kando's. Always a list: 0 or 1 entry for a target, so the
+// tool takes the first. No `boardId`/`boardKey` in the selection — `KEY-N`
+// already names the board.
+export const NEXT_TASK = `
+  query NextTask($target: String, $excludeTags: [String!]) {
+    nextTask(target: $target, excludeTags: $excludeTags) {
+      ticket kind id storyId columnId title
     }
   }`;

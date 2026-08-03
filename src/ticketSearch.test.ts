@@ -101,3 +101,36 @@ describe('leanSummary', () => {
     expect(JSON.stringify(leanSummary({ ...row, body: 'SECRET SPEC' }))).not.toContain('SECRET');
   });
 });
+
+describe('leanSummary blocking (KDO-96/98)', () => {
+  const row = {
+    ticket: 'KDO-12',
+    parent: null,
+    title: 'Batched deploys',
+    columnLabel: 'In Progress',
+    subtaskCount: 0,
+    tags: [],
+    releaseName: null,
+    assignee: null,
+    assigneeEmail: null,
+    visibleAt: null,
+    archivedAt: null,
+  };
+
+  it('names the stored blockers and flags blocked from activeBlockedBy', () => {
+    const r = leanSummary({ ...row, blockedBy: ['KDO-7', 'KDO-9'], activeBlockedBy: ['KDO-7'] });
+    expect(r.blockedBy).toEqual(['KDO-7', 'KDO-9']);
+    expect(r.blocked).toBe(true);
+  });
+
+  it('keeps a fully-resolved dependency listed without flagging it', () => {
+    const r = leanSummary({ ...row, blockedBy: ['KDO-7'], activeBlockedBy: [] });
+    expect(r.blockedBy).toEqual(['KDO-7']);
+    expect(r).not.toHaveProperty('blocked');
+  });
+
+  it('emits neither field when there are no dependencies', () => {
+    expect(leanSummary(row)).not.toHaveProperty('blockedBy');
+    expect(leanSummary(row)).not.toHaveProperty('blocked');
+  });
+});
