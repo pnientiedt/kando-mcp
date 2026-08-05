@@ -113,10 +113,18 @@ describe('ensureLoopAuthorization', () => {
     expect(out).not.toContain('Old wording');
   });
 
-  it('says the coordinator owns main and workers stay on the branch', () => {
+  it('says the coordinator owns the base branch and workers stay on the loop branch', () => {
     const out = ensureLoopAuthorization('');
     expect(out).toContain('kando-loop/*');
     expect(out).toMatch(/coordinator, not a worker, is what touches/);
+  });
+
+  it('names the base branch generically, not `main`', () => {
+    // A repo that ships from `master` gets this block too. Authorizing a merge to
+    // `main` by name reads as "not my branch" there — the loop then stops to ask.
+    const out = ensureLoopAuthorization('');
+    expect(out).toContain('base branch');
+    expect(out).not.toMatch(/merge that branch to `main`/);
   });
 });
 
