@@ -102,7 +102,9 @@ what it changed as comments, and leaves the description you wrote alone.
 
 ## Skills & commands
 
-`init` installs the `kando`, `kando-refine`, and `kando-autonomous-loop` skills plus the `/kando-loop` and `/kando-refine` commands. See each skill for details; `/kando-loop` autonomously works tickets to completion and `/kando-refine` turns a ticket into a spec interactively.
+`init` installs the `kando`, `kando-brainstorm`, `kando-refine`, and `kando-autonomous-loop` skills plus the `/kando-brainstorm`, `/kando-loop` and `/kando-refine` commands. See each skill for details. Together they cover a piece of work end to end: `/kando-brainstorm` turns a loose idea into an agreed design and lands it as a refined ticket, `/kando-refine` sharpens a ticket that already exists into a spec, and `/kando-loop` autonomously works tickets to completion.
+
+`/kando-brainstorm` is the front door when nothing is written down yet. It's an interactive design conversation — one question at a time, 2–3 approaches with a recommendation, the design presented in sections for your approval — and it writes nothing until you approve. Then it creates a story whose body is a `## 📋 Specification` in the same shape `/kando-refine` produces, tags it `refined`, and stops there. It never writes code: the ticket is the deliverable.
 
 `/kando-loop` works tickets **one at a time** but ships them **in batches**. Each ticket is implemented test-first, reviewed by an independent agent, and parked on a per-run `kando-loop/*` branch under a `pending-ship` tag. When a batch is worth deploying — normally a completed story, always before the run exits — the loop merges it to `main` and runs your full verification **once for the batch**. A story with ten subtasks therefore costs one deploy and one suite run, not ten. Only then do its tickets reach the last column. If a batch goes red, the loop fixes forward twice under the same review gate, and reverts the merge if that fails.
 
