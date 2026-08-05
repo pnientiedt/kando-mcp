@@ -8,9 +8,14 @@ description: Use when asked to autonomously work one or more Kando targets — b
 Work one or more Kando **targets** (board keys and/or `KEY-N` stories/subtasks) autonomously: a **coordinator loop** dispatches a **fresh worker subagent per ticket**, gates each ticket behind TDD and an **independent review**, and continues until nothing workable remains — across every target given, in order. Running `/kando-loop` authorizes spawning worker + reviewer subagents for this task.
 
 **Work is ticket-at-a-time; shipping is batch-at-a-time.** Tickets accumulate on one
-`kando-loop/<run-id>` branch, and the coordinator merges to `main` and runs the repo's
-full verification once per **batch** — normally a completed story. A story with ten
-subtasks costs one deploy and one full suite run, not ten. See "Batching and the flush".
+`kando-loop/<run-id>` branch, and the coordinator merges to the repo's **base branch**
+and runs the repo's full verification once per **batch** — normally a completed story. A
+story with ten subtasks costs one deploy and one full suite run, not ten. See "Batching
+and the flush".
+
+**`<base>` throughout this skill means the branch you resolved at run start — never
+assume `main`.** Plenty of repos ship from `master`, and some from `develop` or
+`trunk`; resolving it is step one of the branch setup below.
 
 **REQUIRED BACKGROUND:** the `kando` skill (the record-then-code gate) and the `test-driven-development` skill. Every worker follows both.
 
@@ -44,20 +49,35 @@ at a time and **shipped in batches** — see "Batching and the flush". That is t
 point of this design: a story with ten subtasks costs one deploy and one full suite run,
 not ten.
 
-**Before the first ticket, cut the run's loop branch.** Every ticket lands there; only
-you ever touch `main`.
+**Before the first ticket, resolve `<base>` — once per run.** Everything downstream
+merges, pushes, reverts and prunes against it, so a wrong guess here ships to the wrong
+place or fails outright in a `master` repo.
+
+```
+git symbolic-ref --short refs/remotes/origin/HEAD    # → origin/master → base is master
+```
+
+If that fails, `origin/HEAD` was never set locally — routine in a clone made with
+`--single-branch` or one whose default branch was renamed. Repair it with
+`git remote set-head origin -a` and ask again. Only if *that* fails too (no `origin` at
+all) fall back to the branch checked out at run start, `git rev-parse --abbrev-ref HEAD`.
+**Never fall back to a hardcoded `main`** — in a `master` repo it produces a plausible
+command that fails at the first checkout, mid-flush.
+
+**Then cut the run's loop branch.** Every ticket lands there; only you ever touch
+`<base>`.
 
 - A **dirty working tree is a hard stop.** Refuse to start rather than sweep somebody's
   uncommitted work into a batch you are going to ship to production.
-- Bring `main` up to date (`git checkout main && git pull --ff-only`), then
+- Bring `<base>` up to date (`git checkout <base> && git pull --ff-only`), then
   `git checkout -b kando-loop/<run-id>`, where `<run-id>` is a `YYYYMMDD-HHMMSS`
   timestamp.
 - **One branch serves the whole run**, including a multi-target run spanning several
-  boards. After each green flush it is fast-forwarded to `main` and reused. At the end of
-  the run it is **deleted** — see "Retiring the loop branch".
-- **Then prune the leftovers.** `git branch --merged main --list 'kando-loop/*'` and
+  boards. After each green flush it is fast-forwarded to `<base>` and reused. At the end
+  of the run it is **deleted** — see "Retiring the loop branch".
+- **Then prune the leftovers.** `git branch --merged <base> --list 'kando-loop/*'` and
   delete every one it names, locally and on `origin` — they are, by definition, already
-  in `main`. Runs that died mid-flight leave these behind; sweeping them at the start of
+  in `<base>`. Runs that died mid-flight leave these behind; sweeping them at the start of
   the next run is what keeps them from piling up. A `kando-loop/*` branch that is **not**
   fully merged is somebody's unshipped work: leave it alone and say so in your summary.
 
@@ -74,14 +94,18 @@ the bot is.
 Restate the cache as a compact run header at the top of **every** turn:
 
 ```
-branch kando-loop/20260727-153000 | batch TSK-11, TSK-12
+base master | branch kando-loop/20260727-153000 | batch TSK-11, TSK-12
 board TSK → in-progress "In Progress", last "Done"
 ```
 
+`base` rides in the header for the same reason the columns do: it is resolved once, and
+every later turn reads it there instead of re-deriving it or defaulting to `main`.
+
 You end your turn during the flush verification wait and are re-invoked by heartbeats,
 so anything held only in context does not survive. If the header is missing when you
-resume, rebuild it: `get_board` for the board you are on, `git branch --show-current`
-for the branch, and the **`pending-ship` tickets on the board** for the batch — which is
+resume, rebuild it: `get_board` for the board you are on, `git branch --list
+'kando-loop/*'` for the branch, the `origin/HEAD` lookup again for `<base>` (it is
+derived, never guessed), and the **`pending-ship` tickets on the board** for the batch — which is
 exactly why the hold is a tag and not a list in your head. Worst case that costs one
 fetch per interruption — still far below one per worker.
 
@@ -127,7 +151,7 @@ Final summary: cumulative counts of done / human-needed / skipped, the stop reas
 
 ## Batching and the flush
 
-A **flush** is the only thing that ships: merge the loop branch into `main`, push,
+A **flush** is the only thing that ships: merge the loop branch into `<base>`, push,
 deploy, and run the repo's full verification once for the whole batch. **You** do this —
 never a worker. Three things trigger one:
 
@@ -149,9 +173,9 @@ never a worker. Three things trigger one:
 a flush, and step 7 has usually just done one — there is nothing to merge. Skip it
 silently; do not construct an empty merge commit.
 
-1. **Merge and push.** `git checkout main && git pull --ff-only`, then
+1. **Merge and push.** `git checkout <base> && git pull --ff-only`, then
    `git merge --no-ff kando-loop/<run-id>` with a message naming **every ticket in the
-   batch**, then `git push origin main`. Record the **merge sha**.
+   batch**, then `git push origin <base>`. Record the **merge sha**.
 2. **Arm the waiter against the merge sha** and **end your turn** — the mechanism is
    exactly the one this loop has always used, only far less often:
    - `Monitor` with `persistent: true`, command `node .claude/hooks/kando-verify-wait.mjs`
@@ -164,10 +188,10 @@ silently; do not construct an empty merge commit.
    batch, you do the board writes yourself:
    - `update_ticket` to **remove `pending-ship`** (keep `claude` and everything else);
    - `move_ticket` to the **last column**;
-   - `add_comment` the **deep link** — the `main` commit URL, plus the pipeline run URL
+   - `add_comment` the **deep link** — the `<base>` commit URL, plus the pipeline run URL
      — opening the comment with `shipped`.
 
-   Then `git checkout kando-loop/<run-id> && git merge --ff-only main` to carry the
+   Then `git checkout kando-loop/<run-id> && git merge --ff-only <base>` to carry the
    branch forward, clear the batch list, and continue.
 
    *You* do these writes because the batch's workers finished their turns long ago, and
@@ -182,15 +206,15 @@ silently; do not construct an empty merge commit.
 
 ### When a flush goes red
 
-`main` and production are **broken**. Say so **prominently** in your output — not buried
+`<base>` and production are **broken**. Say so **prominently** in your output — not buried
 in a status line. Then fix forward, twice at most:
 
 1. **`git checkout kando-loop/<run-id>` first.** The merge left your working tree on
-   `main`, and the fixer must not work there. Then dispatch a **`kando-worker`**
+   `<base>`, and the fixer must not work there. Then dispatch a **`kando-worker`**
    (`subagent_type: kando-worker`, `model: sonnet`, `run_in_background: false`) on a
    **synthetic brief** — create **no** board ticket. Give it: the failing run's output
    and URL, the merge sha, the batch's ticket keys, and the diff range to read. Tell it
-   it is on the loop branch, which already holds the whole batch (`main` differs only by
+   it is on the loop branch, which already holds the whole batch (`<base>` differs only by
    the merge commit); that it must keep TDD wherever the failure has a testable surface;
    and that it commits, pushes the branch, and reports `ready-for-review`.
 2. Dispatch a **fresh `kando-reviewer`** on the fixer's own diff range — same inner loop,
@@ -201,7 +225,7 @@ in a status line. Then fix forward, twice at most:
 **Bounded at 2 fixer attempts per red flush**, and the count **resets on green**. On
 exhaustion:
 
-- `git revert -m 1 <merge-sha>` and push — `main` and production return to the last
+- `git revert -m 1 <merge-sha>` and push — `<base>` and production return to the last
   green state. The loop branch keeps every commit, so nothing is lost, only unshipped.
 - `add_comment` a `blocked` comment on **every** ticket in the batch, naming the
   red run and what both fixers tried.
@@ -228,10 +252,10 @@ fast-forwards it to carry on.
 **Do this as the last act of the run, after the exit flush has gone green**, before you
 write the final summary:
 
-1. `git checkout main && git pull --ff-only` — you cannot delete the branch you are
+1. `git checkout <base> && git pull --ff-only` — you cannot delete the branch you are
    standing on, and `-d` judges "merged" against where you are.
 2. `git branch -d kando-loop/<run-id>` — **`-d`, never `-D`.** The lowercase flag refuses
-   to delete a branch holding commits that are not in `main`, which is exactly the check
+   to delete a branch holding commits that are not in `<base>`, which is exactly the check
    you want: it is git verifying your claim that everything shipped. If it refuses,
    **believe it** — something is unshipped. Do not reach for `-D`; report the branch as
    kept and say what is on it.
@@ -301,10 +325,10 @@ Dispatch a general-purpose subagent with this instruction (substitute the real `
 > 4. **Implement to green (GREEN).** Minimal code to make those tests pass; then run the full suite (and build, if any) and confirm it is green.
 > 5. **Commit LOCALLY — do NOT push.** You are on the run's `kando-loop/<run-id>` branch; stay on it and never switch. `add_comment KEY-N` opening with `done`, saying what you changed and where. `git commit`. Then **report `ready-for-review`** and STOP — do not push. The coordinator will have an independent reviewer look at your diff.
 > 6. **When the coordinator sends review findings:** fix every BLOCKING one, keep the suite green, `git commit`, and report `ready-for-review` again. (Apply low-risk ADVISORY suggestions too, or note them in the Done section.)
-> 7. **When the coordinator says `review passed — push the branch`:** push the run's loop branch `kando-loop/<run-id>` — the branch you are already on. **Never push `main`, never merge into `main`, and never open a PR.** Running `/kando-loop` authorizes this push; do NOT stop to ask. Then report **`pushed`** with the commit sha and STOP. The coordinator decides when your ticket's batch ships and owns every pipeline wait: **do not watch a pipeline, and do not move the ticket to the last column** — it is not Done until the batch is verified green on `main`, and the coordinator records that itself.
+> 7. **When the coordinator says `review passed — push the branch`:** push the run's loop branch `kando-loop/<run-id>` — the branch you are already on. **Never push the repo's base branch (whether it is called `main`, `master` or anything else), never merge into it, and never open a PR.** Running `/kando-loop` authorizes this push; do NOT stop to ask. Then report **`pushed`** with the commit sha and STOP. The coordinator decides when your ticket's batch ships and owns every pipeline wait: **do not watch a pipeline, and do not move the ticket to the last column** — it is not Done until the batch is verified green on the base branch, and the coordinator records that itself.
 > 8. **When the coordinator says `block it`:** `ensure_tag <board> human-needed`, apply it (keep `claude`), `add_comment KEY-N` opening with `blocked`, giving the outstanding findings and what you tried, leave the ticket un-shipped, report **`blocked`**.
 > **Run long commands in the FOREGROUND — never `run_in_background`.** Test suite, build, install, e2e run: sit through it. You are a subagent, so ending your turn is *terminal*, and a background job's completion notification is delivered to the **coordinator**, not to you — park yourself waiting for one and you stop before committing, stranding the work. If a command would outlast the foreground timeout, narrow it (one suite, one spec) and say so; do not background it. The "never block in your own foreground" rule elsewhere in this skill is addressed to the coordinator and does **not** apply to you.
-> Report exactly one word each turn — `ready-for-review`, `pushed`, or `blocked` — with a one-line reason. There is no `done` for you to report: only the coordinator can mark a ticket Done, and only after its batch is green on `main`. Never push before the coordinator says the review passed.
+> Report exactly one word each turn — `ready-for-review`, `pushed`, or `blocked` — with a one-line reason. There is no `done` for you to report: only the coordinator can mark a ticket Done, and only after its batch is green on the base branch. Never push before the coordinator says the review passed.
 
 ## Reviewer prompt (independent — never the implementer)
 
@@ -342,13 +366,14 @@ Dispatch a FRESH general-purpose subagent (it did NOT write this code) with:
 
 ## Never
 
-- **Never mark a ticket `done` before its batch's merge commit is on `main` AND the verification has gone green.** A ticket sitting on the loop branch under `pending-ship` is NOT done, however finished and well-reviewed it is. Only **you** set `done`, and only at step 3 of a green flush.
-- **Never let a worker push `main`.** Workers push `kando-loop/<run-id>` and nothing else; the merge is yours alone.
+- **Never mark a ticket `done` before its batch's merge commit is on `<base>` AND the verification has gone green.** A ticket sitting on the loop branch under `pending-ship` is NOT done, however finished and well-reviewed it is. Only **you** set `done`, and only at step 3 of a green flush.
+- **Never let a worker push `<base>`.** Workers push `kando-loop/<run-id>` and nothing else; the merge is yours alone.
+- **Never hardcode `main`.** `<base>` is whatever you resolved at run start — `master` and `develop` are just as common, and a command aimed at the wrong branch either fails loudly mid-flush or ships somewhere nobody expected.
 - **Never exit the run with work left on the branch.** Every stop path flushes first — the sole exception being a red flush that exhausted its fixers and already reverted.
 - **Never exit the run leaving a fully merged loop branch behind**, locally or on `origin`. Retire it — and never with `git branch -D`: if `-d` refuses, the branch is holding unshipped work and must be kept and reported, not forced away.
 - **Never flush mid-container-story.** A container ships whole, as one deploy; half of one in production is the failure this design exists to prevent.
 - **Never ship a batch nobody would deploy on purpose.** A chore, a flaky-test fix or a docs change does not earn a deploy of its own — it rides along. A meaningful standalone story does, and should not be made to wait.
-- Never stop the loop to ask for deploy authorization — `/kando-loop` is the standing authorization to push the loop branch, merge it to `main`, and deploy.
+- Never stop the loop to ask for deploy authorization — `/kando-loop` is the standing authorization to push the loop branch, merge it to `<base>`, and deploy.
 - Never push before the independent review passes. The reviewer is NEVER the implementer — always a fresh, separate agent.
 - Never skip TDD when the change is testable; never accept a false "no testable surface" exemption.
 - Never push a red build. Never mark `done` on a red or malformed verification. Never work a ticket assigned to a human. Never lower the `human-needed` bar to skip hard work.
