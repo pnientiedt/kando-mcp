@@ -191,6 +191,26 @@ function readText(p: string): string {
 }
 
 /**
+ * The root of the git work tree `dir` sits in, or `null` if it sits in none.
+ *
+ * Walks up to the filesystem root. `.git` is accepted as a **file** as well as a
+ * directory: a linked worktree or a submodule checkout stores a `gitdir:` pointer
+ * there, and both are ordinary places to install.
+ *
+ * Pure `fs` on purpose — `init` shells out to nothing, so it behaves the same on
+ * Windows and on a machine with no `git` binary on PATH.
+ */
+export function gitWorkTreeRoot(dir: string): string | null {
+  let cur = resolve(dir);
+  for (;;) {
+    if (existsSync(join(cur, '.git'))) return cur;
+    const parent = dirname(cur);
+    if (parent === cur) return null; // filesystem root
+    cur = parent;
+  }
+}
+
+/**
  * Wire the Kando MCP into a target repo (cross-platform, pure Node):
  * `.mcp.json` → `npx kando-mcp serve`, skills/commands/agents into `.claude/`, the Node
  * workflow hook, settings approval + hook registration + loop tool permissions,
@@ -200,7 +220,12 @@ function readText(p: string): string {
  */
 export function init(targetDir: string): void {
   const target = resolve(targetDir);
-  if (!existsSync(join(target, '.git'))) throw new Error(`${target} is not a git repo`);
+  // The install target is a CLAUDE PROJECT directory — the directory you start the
+  // agent in — not necessarily a repo root. A monorepo package, a worktree, a plain
+  // notes folder: all valid. Only `/kando-loop` needs git, and it needs it at run
+  // time, not here; `serve` never touches it. The one thing worth refusing is a
+  // path that isn't there, which is a typo rather than a project.
+  if (!existsSync(target)) throw new Error(`${target} does not exist — create it first`);
   const pkgRoot = dirname(fileURLToPath(import.meta.url)); // src/ (dev) or dist/ (built)
 
   // 1) .mcp.json → npx kando-mcp serve
@@ -240,9 +265,18 @@ export function init(targetDir: string): void {
   const after = ensureLoopAuthorization(before);
   if (after !== before) writeFileSync(claudeMdPath, after);
 
-  // 6) .gitignore — ignore the personal settings file
-  const giPath = join(target, '.gitignore');
-  writeFileSync(giPath, ensureGitignore(readText(giPath), '.claude/settings.local.json'));
+  // 6) .gitignore — ignore the personal settings file, but only where git is
+  // watching. Outside a work tree there is nothing to ignore, and writing a
+  // .gitignore into a plain directory is litter.
+  //
+  // The entry goes in the TARGET's own .gitignore, never the repo root's, even when
+  // the target is a package deep inside a monorepo: `.claude/settings.local.json`
+  // contains a slash, so git anchors it to the directory holding the .gitignore. At
+  // the root it would silently fail to match `packages/api/.claude/...`.
+  if (gitWorkTreeRoot(target)) {
+    const giPath = join(target, '.gitignore');
+    writeFileSync(giPath, ensureGitignore(readText(giPath), '.claude/settings.local.json'));
+  }
 
   // 7) remove stale artifacts from the old bundle-in-repo (bot credentials) model
   cleanupLegacy(target);
