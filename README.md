@@ -13,13 +13,15 @@ You need [Node.js 20+](https://nodejs.org). Then:
 # 1. Log in once per machine (stores only a refresh token, never your password)
 npx kando-mcp login
 
-# 2. Wire it into a repo (run inside the repo you want to use it from)
+# 2. Wire it into a project (run inside the directory you start Claude Code in)
 npx kando-mcp init
 ```
 
-Then **restart Claude Code** in that repo. Confirm it works by asking Claude to “list my Kando boards”.
+Then **restart Claude Code** in that directory. Confirm it works by asking Claude to “list my Kando boards”.
 
 `init` writes `.mcp.json` (pointing at `npx kando-mcp serve`), drops the `kando` skills/commands + a workflow hook into `.claude/`, and approves the server in `.claude/settings.local.json`. It never commits secrets.
+
+**Install where you start the agent, not at the repo root.** The target is a Claude *project* directory, so a package inside a monorepo works: `cd packages/api && npx kando-mcp init` installs there and nowhere else. Git is not required at all — only `/kando-loop` needs a repo, and it needs one at run time. Inside a work tree `init` also adds `.claude/settings.local.json` to that directory's own `.gitignore`; outside one there is nothing to ignore and no `.gitignore` is created.
 
 ## Authentication
 

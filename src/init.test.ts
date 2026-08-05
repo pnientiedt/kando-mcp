@@ -14,6 +14,7 @@ import {
   relTargets,
   mcpServerEntry,
   cleanupLegacy,
+  gitWorkTreeRoot,
   init,
 } from './init.js';
 
@@ -237,9 +238,61 @@ describe('init (integration)', () => {
     expect(readFileSync(join(dir, '.gitignore'), 'utf8')).toContain('.claude/settings.local.json');
   });
 
-  it('throws when the target is not a git repo', () => {
+  it('installs into a plain directory with no git anywhere above it', () => {
+    // A Claude project dir is wherever you run the agent. Git is a `/kando-loop`
+    // requirement, not an install-time one, and the server never shells out to it.
     const dir = mkdtempSync(join(tmpdir(), 'kando-init-nogit-'));
-    expect(() => init(dir)).toThrow(/not a git repo/);
+    init(dir);
+
+    expect(existsSync(join(dir, '.mcp.json'))).toBe(true);
+    expect(existsSync(join(dir, '.claude', 'skills', 'kando', 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(dir, '.claude', 'settings.local.json'))).toBe(true);
+    // Nothing to ignore when nothing tracks the directory.
+    expect(existsSync(join(dir, '.gitignore'))).toBe(false);
+  });
+
+  it('installs into a subdirectory of a git repo (monorepo package)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kando-init-mono-'));
+    mkdirSync(join(root, '.git'), { recursive: true });
+    const pkg = join(root, 'packages', 'api');
+    mkdirSync(pkg, { recursive: true });
+
+    init(pkg);
+
+    expect(existsSync(join(pkg, '.claude', 'skills', 'kando', 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(pkg, '.mcp.json'))).toBe(true);
+    // The entry goes in the package's OWN .gitignore: `.claude/settings.local.json`
+    // is an anchored pattern, so from the repo root it would not match here.
+    expect(readFileSync(join(pkg, '.gitignore'), 'utf8')).toContain('.claude/settings.local.json');
+    expect(existsSync(join(root, '.gitignore'))).toBe(false);
+    // The install is scoped to the package, never scattered up to the repo root.
+    expect(existsSync(join(root, '.claude'))).toBe(false);
+    expect(existsSync(join(root, '.mcp.json'))).toBe(false);
+  });
+
+  it('throws a clear error when the target directory does not exist', () => {
+    const missing = join(mkdtempSync(join(tmpdir(), 'kando-init-gone-')), 'nope');
+    expect(() => init(missing)).toThrow(/does not exist/);
+  });
+});
+
+describe('gitWorkTreeRoot', () => {
+  it('finds the root from a nested subdirectory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kando-wt-'));
+    mkdirSync(join(root, '.git'), { recursive: true });
+    const deep = join(root, 'a', 'b', 'c');
+    mkdirSync(deep, { recursive: true });
+    expect(gitWorkTreeRoot(deep)).toBe(root);
+  });
+
+  it('accepts a .git FILE — a worktree or submodule checkout', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kando-wt-file-'));
+    writeFileSync(join(dir, '.git'), 'gitdir: /elsewhere/.git/worktrees/x\n');
+    expect(gitWorkTreeRoot(dir)).toBe(dir);
+  });
+
+  it('returns null when no ancestor is a work tree', () => {
+    expect(gitWorkTreeRoot(mkdtempSync(join(tmpdir(), 'kando-wt-none-')))).toBe(null);
   });
 });
 
