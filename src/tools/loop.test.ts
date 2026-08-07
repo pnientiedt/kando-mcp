@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { pickTagColors, registerLoopTools } from './loop.js';
+import { pickTagColors, registerLoopTools, UNBLOCKING_TAGS } from './loop.js';
 import { KandoError } from '../graphql.js';
 import type { ToolHost } from './read.js';
 
@@ -87,6 +87,20 @@ describe('next_task description', () => {
       expect(d).toContain(skipped);
     }
   });
+
+  it('explains that pending-ship no longer blocks dependents, so a subtask and its dependent batch together', () => {
+    const { host, configs } = capture();
+    registerLoopTools(host, (async () => ({})) as never);
+    const d: string = configs.next_task.description;
+    expect(d).toMatch(/pending-ship.{0,200}(no longer|not).{0,40}block/is);
+  });
+});
+
+describe('UNBLOCKING_TAGS', () => {
+  it('is exactly pending-ship — human-needed marks a real stall, not finished work, so it must never unblock', () => {
+    expect(UNBLOCKING_TAGS).toEqual(['pending-ship']);
+    expect(UNBLOCKING_TAGS).not.toContain('human-needed');
+  });
 });
 
 describe('next_task', () => {
@@ -120,6 +134,7 @@ describe('next_task', () => {
     expect(calls[0].variables).toEqual({
       target: 'TSK',
       excludeTags: ['human-needed', 'pending-ship'],
+      unblockingTags: ['pending-ship'],
     });
   });
 

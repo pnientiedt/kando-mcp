@@ -21,6 +21,20 @@ export function pickTagColors(name: string): { colorBg: string; colorText: strin
  */
 const EXCLUDE_TAGS = ['human-needed', 'pending-ship'];
 
+/**
+ * Tags whose presence tells Kando's blocker resolution "this ticket no longer
+ * blocks its dependents" — distinct from EXCLUDE_TAGS, which says "don't serve
+ * ME this ticket". Both lists contain `pending-ship` but mean different things:
+ * a ticket the loop finished and parked awaiting a batched deploy should stop
+ * blocking a dependent subtask right away (KDO-104/KDO-106), even though the
+ * loop itself still must not be handed that ticket again.
+ *
+ * `human-needed` deliberately stays out of this list: a ticket stalled waiting
+ * on a human is not finished, so it is right for it to keep blocking its
+ * dependents — it should stay stopped, not silently unblock downstream work.
+ */
+export const UNBLOCKING_TAGS = ['pending-ship'];
+
 // No `botEmail`: KDO-99 selects against the CALLER's identity server-side, so
 // "assigned to a human" is "assigned to someone other than me" without this
 // server looking a bot member up by email first.
@@ -57,13 +71,17 @@ export function registerLoopTools(server: ToolHost, gql: Gql) {
         'blockedBy dependency, including one inherited from the container story), tickets assigned to ' +
         'someone else, and the human-needed / pending-ship tags. pending-ship marks a ticket the autonomous ' +
         'loop has finished and parked on its branch awaiting a batched deploy; the loop clears it once the ' +
-        'batch ships. Work units are standalone stories and subtasks, never a container story.',
+        'batch ships. pending-ship also no longer blocks its dependents: a ticket carrying it counts as a ' +
+        'resolved blocker, so a subtask and the dependent subtask waiting on it land in the same batch and ' +
+        'the container story ships whole, instead of the dependent silently never being served. Work units ' +
+        'are standalone stories and subtasks, never a container story.',
       inputSchema: { target: z.string().describe('board key/id, or a ticket KEY-N') },
     },
     async ({ target }) => {
       let list: any[];
       try {
-        list = (await gql(NEXT_TASK, { target, excludeTags: EXCLUDE_TAGS })).nextTask ?? [];
+        const vars = { target, excludeTags: EXCLUDE_TAGS, unblockingTags: UNBLOCKING_TAGS };
+        list = (await gql(NEXT_TASK, vars)).nextTask ?? [];
       } catch (e) {
         // BAD_INPUT's table message is write-shaped ("that didn't save"), which
         // is wrong on a read. The server does not say which of the two causes
