@@ -18,6 +18,10 @@ export function pickTagColors(name: string): { colorBg: string; colorText: strin
  * has claimed, and one the loop has finished and parked on its branch awaiting
  * a batched deploy. The server resolves these NAMES per board and hard-codes
  * neither — they are this suite's conventions, not Kando's.
+ *
+ * See UNBLOCKING_TAGS below for the separate "does this ticket still block ITS
+ * DEPENDENTS" question — the two overlap on `pending-ship` but answer different
+ * questions.
  */
 const EXCLUDE_TAGS = ['human-needed', 'pending-ship'];
 
