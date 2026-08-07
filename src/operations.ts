@@ -200,8 +200,8 @@ export const GET_TICKETS = `
 // tool takes the first. No `boardId`/`boardKey` in the selection — `KEY-N`
 // already names the board.
 export const NEXT_TASK = `
-  query NextTask($target: String, $excludeTags: [String!]) {
-    nextTask(target: $target, excludeTags: $excludeTags) {
+  query NextTask($target: String, $excludeTags: [String!], $unblockingTags: [String!]) {
+    nextTask(target: $target, excludeTags: $excludeTags, unblockingTags: $unblockingTags) {
       ticket kind id storyId columnId title
     }
   }`;

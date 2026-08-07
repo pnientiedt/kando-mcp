@@ -111,9 +111,17 @@ fetch per interruption — still far below one per worker.
 
 **For each `target` in the list, in order, repeat until it is exhausted:**
 
-1. Call `next_task(target)` — **unless step 7 already did**, in which case use the result it hands you. If it returns `{ "none": true }` → this target is **exhausted**: go to the **next target** (or, if it was the last, **flush what is on the branch, retire the branch, then stop — success**).
+1. Call `next_task(target)` — **unless step 7 already did**, in which case use the result it hands you. If it returns `{ "none": true }`, an empty result is NOT automatically "nothing left" — distinguish **exhausted** from **stalled** before moving on:
 
-   `next_task` also skips a ticket whose `blockedBy` dependency is not resolved yet, and the subtasks of a blocked container story with it. That is normal, not a fault: the blocker is often a ticket **this loop is about to finish**, and the ticket becomes workable the moment its blocker reaches the last column. Never clear someone's `blockedBy` to unstick a target — work the blocker, or move on to the next target.
+   - **One `search_tickets` call, on this target's board** — if the target is a story, add `parent: target` to scope it to that story's subtasks; if it's a board key, search the whole board. Exactly one call per target, right here — never per ticket.
+   - **Discard anything that isn't a stalled work unit**: **container stories** (`next_task` never serves them — they aren't work units), tickets already in the **last column** (finished), and tickets tagged **`pending-ship`** (finished by this very run and parked for its own flush — without this exclusion, every run would report its own completed work as stalled, which is the bug that would make this check useless).
+   - **Name a reason for everything left**, one per ticket: `blocked` (with its `blockedBy`), assigned to someone other than the bot account (the same `me` identity `assignee: "me"` resolves to), `snoozed`, or tagged `human-needed`. A ticket can match more than one — report the first that applies, in that order; it's one line per ticket, not an exhaustive audit of why it's unworkable.
+   - **Empty list** → this target is **exhausted** — exactly today's behavior unchanged: go to the **next target** (or, if it was the last, **flush what is on the branch, retire the branch, then stop — success**).
+   - **Non-empty list** → this target is **stalled**, not exhausted: something remains but isn't currently workable. Record the ticket list and reasons for the final summary (below). Control flow is the same as exhausted either way — go to the **next target**, or stop after the exit flush if it was the last. **Never retry a stalled target**: blocked is blocked, and dispatching against it again would only spin.
+
+   This adds **no new `next_task` call and no re-query after a flush**. It reuses the empty result already in hand (fresh from step 1, or carried over from step 7); it is not repeated once a flush resolves a blocker. A blocker cleared before the flush resolves through `unblockingTags`, and one cleared after resolves through the last-column check — either way, every dependent's workability is identical on both sides of the flush, so the carried-over `next_task` result stays valid without asking again.
+
+   `next_task` also skips a ticket whose `blockedBy` dependency is not resolved yet, and the subtasks of a blocked container story with it. That is normal, not a fault: the blocker is often a ticket **this loop is about to finish**, and the ticket becomes workable the moment the loop finishes the blocker and tags it `pending-ship` — via `unblockingTags`, that happens **before** the flush, not only once the blocker reaches the last column. Never clear someone's `blockedBy` to unstick a target — work the blocker, or move on to the next target.
 2. Enforce safety BEFORE dispatching (cumulative across all targets):
    - If `done + human-needed ≥ 25` → **flush, then stop (max-tasks)**.
    - If the last **3** results in a row were `human-needed` → **flush, then stop (circuit breaker)**.
@@ -147,7 +155,7 @@ fetch per interruption — still far below one per worker.
 
    A run of nothing but standalone stories therefore has no hard rule at all: it is judgement the whole way, plus the exit flush, which guarantees nothing is stranded.
 
-Final summary: cumulative counts of done / human-needed / skipped, the stop reason, and — if a limit tripped mid-run — which target it stopped on. Also report the **loop branch name and whether it was deleted** (and if it was kept, why), the **batches shipped** (merge sha per batch), and any tickets left `pending-ship`.
+Final summary: cumulative counts of done / human-needed / skipped, the stop reason, and — if a limit tripped mid-run — which target it stopped on. Also report the **loop branch name and whether it was deleted** (and if it was kept, why), the **batches shipped** (merge sha per batch), and any tickets left `pending-ship`. **For every target that ended `stalled` rather than `exhausted`, add a "left unworked" line**: the count, and per ticket its reason (`blocked`, assigned to a human, `snoozed`, `human-needed`). A run that stalls on a target never simply reports success.
 
 ## Batching and the flush
 
