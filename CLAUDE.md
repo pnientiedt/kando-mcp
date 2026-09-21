@@ -1,6 +1,6 @@
 ## Kando autonomous loop — deploy authorization
 
-The `/kando-loop` command runs an autonomous work loop that **spawns worker and reviewer subagents** (the Agent/Task tool) and lets them **commit and push to a `kando-loop/*` branch**, and lets the loop **merge that branch to `main` and trigger the deploy** once a batch of tickets is worth shipping — that is its intended, sanctioned flow. The coordinator, not a worker, is what touches `main`. Do not gate the loop's subagent dispatch, its branch pushes, or its deploys behind asking. (Added by the Kando MCP installer so /kando-loop runs under auto mode; delete this section to withdraw the authorization.)
+The `/kando-loop` command runs an autonomous work loop that **spawns worker and reviewer subagents** (the Agent/Task tool) and lets them **commit and push to a `kando-loop/*` branch**, and lets the loop **merge that branch to this repo's base branch — whatever it is called (`main`, `master`, …) — and trigger the deploy** once a batch of tickets is worth shipping — that is its intended, sanctioned flow. The coordinator, not a worker, is what touches the base branch. Do not gate the loop's subagent dispatch, its branch pushes, or its deploys behind asking. (Added by the Kando MCP installer so /kando-loop runs under auto mode; delete this section to withdraw the authorization.)
 
 ## Releasing — work ends in a tag, not in a merge
 
