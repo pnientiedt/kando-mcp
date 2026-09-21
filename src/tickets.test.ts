@@ -7,6 +7,8 @@ import {
   requireArchived,
   flattenBoard,
   filterItems,
+  parseDecisionId,
+  resolveDecisionRef,
 } from './tickets.js';
 
 describe('parseTicketId', () => {
@@ -68,6 +70,38 @@ describe('resolveTicketRef', () => {
     // missing flag can only mean a live one. Absent must not read as undefined.
     const gql = vi.fn(async () => ({ resolveTicket: { boardId: 'b1', storyId: 's1' } }));
     expect((await resolveTicketRef(gql as never, 'TSK-42')).archived).toBe(false);
+  });
+});
+
+describe('parseDecisionId', () => {
+  it('parses KEY-D-N', () => {
+    expect(parseDecisionId('TSK-D-3')).toEqual({ key: 'TSK', num: 3 });
+    expect(parseDecisionId('tsk-d-7')).toEqual({ key: 'TSK', num: 7 });
+  });
+
+  it('rejects a plain ticket ref (KEY-N is never a decision)', () => {
+    expect(() => parseDecisionId('TSK-42')).toThrow(/Not a decision id.*KEY-D-N/s);
+  });
+
+  it('rejects garbage', () => {
+    expect(() => parseDecisionId('nope')).toThrow();
+  });
+});
+
+describe('resolveDecisionRef', () => {
+  it('calls resolveDecisionRef with parsed parts and returns the boardId + full decision', async () => {
+    const gql = vi.fn(async () => ({
+      resolveDecisionRef: { boardId: 'b1', decision: { id: '3', num: 3, title: 'Pick a stack' } },
+    }));
+    const ref = await resolveDecisionRef(gql as never, 'TSK-D-3');
+    expect(ref).toEqual({ boardId: 'b1', decision: { id: '3', num: 3, title: 'Pick a stack' } });
+    expect(gql).toHaveBeenCalledWith(expect.any(String), { key: 'TSK', num: 3 });
+  });
+
+  it('rejects a malformed ref before any network call', async () => {
+    const gql = vi.fn();
+    await expect(resolveDecisionRef(gql as never, 'TSK-3')).rejects.toThrow(/Not a decision id/);
+    expect(gql).not.toHaveBeenCalled();
   });
 });
 

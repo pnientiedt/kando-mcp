@@ -1,5 +1,5 @@
 import { KandoError, type GqlClient } from './graphql.js';
-import { RESOLVE_TICKET } from './operations.js';
+import { RESOLVE_TICKET, RESOLVE_DECISION_REF } from './operations.js';
 
 export function parseTicketId(input: string): { key: string; num: number } {
   const m = input.trim().match(/^([A-Za-z]{1,10})-(\d+)$/);
@@ -7,6 +7,38 @@ export function parseTicketId(input: string): { key: string; num: number } {
     throw new KandoError(`Not a ticket id (expected KEY-N, e.g. TSK-42): "${input}"`, 'BAD_INPUT');
   }
   return { key: m[1].toUpperCase(), num: Number(m[2]) };
+}
+
+/**
+ * `KEY-D-N` — a decision's own numbering namespace (KDO-128), distinct from a
+ * ticket's `KEY-N` BY CONSTRUCTION: a board key is letters only, so it can
+ * never contain the `-D-` a decision ref requires, and vice versa. Mirrors
+ * the app's own `parseDecisionHash`/`parseTicketHash` split. A decision is
+ * never a ticket and vice versa — this never falls back to `parseTicketId`.
+ */
+export function parseDecisionId(input: string): { key: string; num: number } {
+  const m = input.trim().match(/^([A-Za-z]{1,10})-D-(\d+)$/i);
+  if (!m) {
+    throw new KandoError(
+      `Not a decision id (expected KEY-D-N, e.g. TSK-D-3): "${input}"`,
+      'BAD_INPUT',
+    );
+  }
+  return { key: m[1].toUpperCase(), num: Number(m[2]) };
+}
+
+/**
+ * Resolve a `KEY-D-N` decision ref to its board and full Decision (KDO-128/129:
+ * the decision's internal `id` is literally `String(num)`, so this alone gives
+ * resolve_decision/reopen_decision everything they need — no separate lookup).
+ */
+export async function resolveDecisionRef(
+  gql: GqlClient,
+  input: string,
+): Promise<{ boardId: string; decision: any }> {
+  const { key, num } = parseDecisionId(input);
+  const data = await gql(RESOLVE_DECISION_REF, { key, num });
+  return data.resolveDecisionRef;
 }
 
 /**

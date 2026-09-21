@@ -194,6 +194,52 @@ export const GET_TICKETS = `
     }
   }`;
 
+// --- Decisions (KDO-130) ----------------------------------------------------
+// Mirrors infra/graphql/schema.graphql's Decision family + web/src/api/operations.ts's
+// `decisionFields`, ported to this file's anonymous-operation style.
+const decisionFields = `
+  id num boardId title description options { id label rating reasoning isCustom }
+  assignee status resolution { chosenOptionId resolvedBy resolvedAt } keywords createdAt createdBy`;
+
+export const CREATE_DECISION = `
+  mutation ($boardId: ID!, $title: String!, $description: String, $options: [DecisionOptionInput!],
+    $keywords: [String!], $assignee: String) {
+    createDecision(boardId: $boardId, title: $title, description: $description, options: $options,
+      keywords: $keywords, assignee: $assignee) { boardId kind decision { ${decisionFields} } }
+  }`;
+
+// `resolvedAfter` is HISTORY-only server-side (ignored, not an error, on RELEVANT/ALL) —
+// the tool that calls this rejects the combination itself, louder than a silent no-op.
+export const LIST_DECISIONS = `
+  query ($boardId: ID!, $filter: DecisionFilter, $cursor: String, $keyword: String, $resolvedAfter: AWSDateTime) {
+    listDecisions(boardId: $boardId, filter: $filter, cursor: $cursor, keyword: $keyword,
+      resolvedAfter: $resolvedAfter) {
+      items { ${decisionFields} }
+      nextCursor
+      totalCount
+    }
+  }`;
+
+export const RESOLVE_DECISION = `
+  mutation ($boardId: ID!, $decisionId: ID!, $chosenOptionId: ID, $customOption: DecisionOptionInput) {
+    resolveDecision(boardId: $boardId, decisionId: $decisionId, chosenOptionId: $chosenOptionId,
+      customOption: $customOption) { boardId kind decision { ${decisionFields} } }
+  }`;
+
+export const REOPEN_DECISION = `
+  mutation ($boardId: ID!, $decisionId: ID!) {
+    reopenDecision(boardId: $boardId, decisionId: $decisionId) { boardId kind decision { ${decisionFields} } }
+  }`;
+
+// KDO-128: resolve a `KEY-D-N` decision ref, same shape as resolveTicket for
+// tickets — unlike TicketRef, it carries the full Decision (no separate getDecision
+// query), which is what lets resolve_decision match chosenOption by label without
+// a second round trip.
+export const RESOLVE_DECISION_REF = `
+  query ($key: String!, $num: Int!) {
+    resolveDecisionRef(key: $key, num: $num) { boardId decision { ${decisionFields} } }
+  }`;
+
 // KDO-99: the loop's task-selection rule, server-side. `excludeTags` are NAMES,
 // resolved per board — the loop's `human-needed`/`pending-ship` conventions stay
 // the caller's, not Kando's. Always a list: 0 or 1 entry for a target, so the
