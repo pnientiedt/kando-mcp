@@ -108,6 +108,46 @@ container story.
 `search_tickets` reports `blocked` too, so a list tells you which rows are unworkable
 without a `get_ticket` per row.
 
+## Decisions
+
+A decision is a **human-gate primitive, not a unit of work** — a way to pause and ask a
+human to pick among rated/reasoned options, or supply a custom answer, rather than
+something you go do. Reach for one whenever the right call is a human's to make, not
+yours: an ambiguous requirement, a choice with real tradeoffs, a "should I actually do
+this" moment.
+
+**Addressing — `KEY-D-N`, its own namespace.** A decision is never returned by
+`get_ticket` or `search_tickets`, and a decision ref is never a ticket ref or vice versa
+— `TSK-D-3` addresses a decision, `TSK-3` a ticket, and neither tool accepts the other's
+shape.
+
+**Creating one — `create_decision`:** `board`, `title`, `description?`, one or more
+`options` (`label`, optional `rating` 1-100, optional `reasoning`), optional `assignee`,
+optional `keywords` (up to 10, 40 chars each). Give every decision raised by one workflow
+run a shared keyword — that is what lets the same process find its own decisions again
+later, since a decision is otherwise invisible to `search_tickets`.
+
+**The poll pattern — how an automated process waits for a human without blocking
+synchronously.** Call `list_decisions(board, filter:'history', keyword, resolvedAfter)`
+on a schedule (e.g. every few minutes) instead of blocking on a human's reply:
+
+1. First poll: omit `resolvedAfter`. The response carries `latestResolvedAt` — the max
+   `resolvedAt` among the decisions it returned.
+2. Remember that value. On the next poll, pass it back in as `resolvedAfter`.
+3. Repeat: each poll returns only what resolved since the last one, and its own
+   `latestResolvedAt` becomes the next poll's `resolvedAfter`. Nothing is ever seen twice
+   and nothing resolved in between is skipped.
+
+`resolvedAfter` only means anything for `filter:'history'` — passing it with
+`'relevant'`/`'all'` (the default) is rejected outright rather than silently ignored.
+
+**Resolving directly — when a human states their choice in chat** rather than through
+the board UI, skip the wait and resolve it yourself: `resolve_decision(decision,
+chosenOption)` (matched against an option's label, or its raw id) or `resolve_decision(
+decision, customOption: {label, reasoning?})` for an answer not among the offered
+options — exactly one of the two, never both, never neither. `reopen_decision(decision)`
+undoes a resolution (a no-op, not an error, on one that's already open).
+
 ## Finding work
 
 `search_tickets` searches **across boards**, filtered server-side — omit `boards` and it

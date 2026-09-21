@@ -54,6 +54,7 @@ Access is **per board**. The account you log in as only sees boards it is a memb
 - **Read:** `list_boards`, `get_board`, `get_ticket`, `search_tickets`
 - **Tickets:** `create_story`, `create_subtask`, `update_ticket`, `move_ticket`, `reorder_ticket`, `archive_ticket`, `unarchive_ticket`, `delete_ticket`
 - **Comments:** `list_comments`, `add_comment`, `edit_comment`, `delete_comment`
+- **Decisions:** `create_decision`, `list_decisions`, `resolve_decision`, `reopen_decision`
 - **Tags:** `create_tag`, `update_tag`, `delete_tag`
 - **Releases:** `create_release`, `update_release`, `delete_release`
 - **Loop:** `next_task`, `ensure_tag`
@@ -78,6 +79,21 @@ stops blocking), so every tool agrees. `search_tickets` reports `blocked` on eac
 and `next_task` never returns a blocked ticket, nor the subtasks of a blocked container
 story. Set one with `blockedBy` on
 `update_ticket` / `create_story` / `create_subtask`; `[]` clears.
+
+A **decision** is a human-gate primitive, not a unit of work: it pauses to ask a human to
+pick among rated/reasoned options, or supply a custom answer, rather than tracking
+something to do. Addressed as **`KEY-D-N`** — its own namespace, never a ticket ref and
+vice versa, so it never shows up in `get_ticket` or `search_tickets`. `create_decision`
+raises one, with optional `keywords` (up to 10, 40 chars each) so a workflow run can find
+its own decisions again later. The poll pattern is the point of `list_decisions`:
+`list_decisions(board, filter:'history', keyword, resolvedAfter)` on a schedule, feeding
+the response's `latestResolvedAt` back in as the next call's `resolvedAfter`, is how an
+automated process waits for a human without blocking synchronously — each poll returns
+only what resolved since the last one. `resolvedAfter` is rejected outside
+`filter:'history'` rather than silently ignored. When a human states their choice in chat
+instead, `resolve_decision(decision, chosenOption)` (by an option's label or id) or
+`resolve_decision(decision, customOption: {label, reasoning?})` resolves it directly;
+`reopen_decision` undoes a resolution.
 
 `search_tickets` searches **across boards** (omit `boards` for all of them), filtered
 server-side: `tags` + `tagMode`, `releases`, `assignees` (`userSub` or `"me"`),
