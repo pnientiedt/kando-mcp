@@ -157,6 +157,35 @@ describe('list_decisions', () => {
     expect(list!.v.filter).toBe('RELEVANT');
   });
 
+  it('passes correctedReasoning through on options, untouched', async () => {
+    const calls: Array<{ q: string; v: any }> = [];
+    const gql = async (q: string, v: any = {}) => {
+      calls.push({ q, v });
+      if (q.includes('myBoards')) return { myBoards: [{ id: 'b1', key: 'KDO' }] };
+      if (q.includes('getBoard')) return BOARD;
+      if (q.includes('listDecisions')) {
+        return {
+          listDecisions: {
+            items: [
+              {
+                id: '1', num: 1, boardId: 'b1', title: 'A',
+                options: [{ id: 'o1', label: 'Postgres', isCustom: false, correctedReasoning: 'actually because X' }],
+                keywords: [], status: 'RESOLVED',
+              },
+            ],
+            nextCursor: null,
+            totalCount: 1,
+          },
+        };
+      }
+      throw new Error(`unexpected query: ${q}`);
+    };
+    const { host, tools } = captureHost();
+    registerDecisionTools(host, gql as never, null);
+    const out = parse(await tools.list_decisions({ board: 'KDO' }));
+    expect(out.decisions[0].options[0].correctedReasoning).toBe('actually because X');
+  });
+
   it('passes keyword and cursor through, and reports nextCursor when present', async () => {
     const calls: Array<{ q: string; v: any }> = [];
     const gql = async (q: string, v: any = {}) => {
@@ -306,6 +335,54 @@ describe('resolve_decision', () => {
     const call = calls.find((c) => c.q.includes('resolveDecision') && !c.q.includes('resolveDecisionRef'));
     expect(call!.v.customOption).toEqual({ label: 'Something else', reasoning: 'because' });
     expect(call!.v.chosenOptionId).toBeUndefined();
+  });
+
+  it('sends correctedReasoning when provided alongside chosenOption', async () => {
+    const calls: Array<{ q: string; v: any }> = [];
+    const gql = gqlWithOptions(calls);
+    const { host, tools } = captureHost();
+    registerDecisionTools(host, gql as never, null);
+    await tools.resolve_decision({ decision: 'KDO-D-5', chosenOption: 'Postgres', correctedReasoning: 'actually because X' });
+    const call = calls.find((c) => c.q.includes('resolveDecision') && !c.q.includes('resolveDecisionRef'));
+    expect(call!.v.correctedReasoning).toBe('actually because X');
+  });
+
+  it('sends correctedReasoning as empty string to clear it', async () => {
+    const calls: Array<{ q: string; v: any }> = [];
+    const gql = gqlWithOptions(calls);
+    const { host, tools } = captureHost();
+    registerDecisionTools(host, gql as never, null);
+    await tools.resolve_decision({ decision: 'KDO-D-5', chosenOption: 'Postgres', correctedReasoning: '' });
+    const call = calls.find((c) => c.q.includes('resolveDecision') && !c.q.includes('resolveDecisionRef'));
+    expect(call!.v.correctedReasoning).toBe('');
+  });
+
+  it('omits correctedReasoning entirely when not provided', async () => {
+    const calls: Array<{ q: string; v: any }> = [];
+    const gql = gqlWithOptions(calls);
+    const { host, tools } = captureHost();
+    registerDecisionTools(host, gql as never, null);
+    await tools.resolve_decision({ decision: 'KDO-D-5', chosenOption: 'Postgres' });
+    const call = calls.find((c) => c.q.includes('resolveDecision') && !c.q.includes('resolveDecisionRef'));
+    expect(call!.v).not.toHaveProperty('correctedReasoning');
+  });
+
+  it('rejects correctedReasoning with customOption before any network call', async () => {
+    const calls: string[] = [];
+    const gql = async (q: string) => {
+      calls.push(q);
+      throw new Error('should not be called');
+    };
+    const { host, tools } = captureHost();
+    registerDecisionTools(host, gql as never, null);
+    await expect(
+      tools.resolve_decision({
+        decision: 'KDO-D-5',
+        customOption: { label: 'y' },
+        correctedReasoning: 'text',
+      }),
+    ).rejects.toThrow(/correctedReasoning/i);
+    expect(calls).toHaveLength(0);
   });
 
   it('rejects both chosenOption and customOption before any network call', async () => {

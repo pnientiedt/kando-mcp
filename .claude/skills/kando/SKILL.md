@@ -145,8 +145,13 @@ on a schedule (e.g. every few minutes) instead of blocking on a human's reply:
 the board UI, skip the wait and resolve it yourself: `resolve_decision(decision,
 chosenOption)` (matched against an option's label, or its raw id) or `resolve_decision(
 decision, customOption: {label, reasoning?})` for an answer not among the offered
-options — exactly one of the two, never both, never neither. `reopen_decision(decision)`
-undoes a resolution (a no-op, not an error, on one that's already open).
+options — exactly one of the two, never both, never neither. Alongside `chosenOption`
+(rejected with `customOption`), an optional `correctedReasoning` corrects that option's
+*stated* reasoning without overwriting its original `reasoning` — both are preserved —
+for when the human's actual rationale turns out to differ from what was recorded when the
+option was raised; it follows the same clearing-a-field sentinel convention as below.
+`reopen_decision(decision)` undoes a resolution (a no-op, not an error, on one that's
+already open).
 
 ## Finding work
 
