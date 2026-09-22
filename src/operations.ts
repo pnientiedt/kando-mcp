@@ -198,7 +198,7 @@ export const GET_TICKETS = `
 // Mirrors infra/graphql/schema.graphql's Decision family + web/src/api/operations.ts's
 // `decisionFields`, ported to this file's anonymous-operation style.
 const decisionFields = `
-  id num boardId title description options { id label rating reasoning isCustom }
+  id num boardId title description options { id label rating reasoning isCustom correctedReasoning }
   assignee status resolution { chosenOptionId resolvedBy resolvedAt } keywords createdAt createdBy`;
 
 export const CREATE_DECISION = `
@@ -221,9 +221,10 @@ export const LIST_DECISIONS = `
   }`;
 
 export const RESOLVE_DECISION = `
-  mutation ($boardId: ID!, $decisionId: ID!, $chosenOptionId: ID, $customOption: DecisionOptionInput) {
+  mutation ($boardId: ID!, $decisionId: ID!, $chosenOptionId: ID, $customOption: DecisionOptionInput,
+    $correctedReasoning: String) {
     resolveDecision(boardId: $boardId, decisionId: $decisionId, chosenOptionId: $chosenOptionId,
-      customOption: $customOption) { boardId kind decision { ${decisionFields} } }
+      customOption: $customOption, correctedReasoning: $correctedReasoning) { boardId kind decision { ${decisionFields} } }
   }`;
 
 export const REOPEN_DECISION = `

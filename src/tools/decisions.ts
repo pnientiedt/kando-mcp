@@ -172,22 +172,34 @@ export function registerDecisionTools(server: ToolHost, gql: Gql, botEmail: stri
           .object({ label: z.string(), reasoning: z.string().optional() })
           .optional()
           .describe('a custom answer not among the offered options'),
+        correctedReasoning: z
+          .string()
+          .optional()
+          .describe(
+            "corrects an existing option's stated reasoning (preserving the original); only valid " +
+              "alongside chosenOption, rejected with customOption. '' clears it, omitted leaves it unchanged.",
+          ),
       },
     },
-    async ({ decision, chosenOption, customOption }) => {
+    async ({ decision, chosenOption, customOption, correctedReasoning }) => {
       // Mirrors the backend's own BAD_INPUT rule — checked before resolving
       // the ref (the first network call this tool would otherwise make).
       if ((chosenOption === undefined) === (customOption === undefined)) {
         throw bad('Provide exactly one of chosenOption or customOption.');
       }
+      if (correctedReasoning !== undefined && customOption !== undefined) {
+        throw bad('correctedReasoning is only valid alongside chosenOption, not customOption.');
+      }
       const ref = await resolveDecisionRef(gql, decision);
       const chosenOptionId = chosenOption !== undefined ? resolveOptionId(ref.decision, chosenOption) : undefined;
-      const d = await gql(RESOLVE_DECISION, {
+      const vars: Record<string, unknown> = {
         boardId: ref.boardId,
         decisionId: ref.decision.id,
         chosenOptionId,
         customOption,
-      });
+      };
+      if (correctedReasoning !== undefined) vars.correctedReasoning = correctedReasoning;
+      const d = await gql(RESOLVE_DECISION, vars);
       const resolved =
         customOption?.label ??
         (ref.decision.options ?? []).find((o: any) => o.id === chosenOptionId)?.label ??
