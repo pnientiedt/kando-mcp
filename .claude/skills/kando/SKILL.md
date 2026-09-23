@@ -153,6 +153,12 @@ option was raised; it follows the same clearing-a-field sentinel convention as b
 `reopen_decision(decision)` undoes a resolution (a no-op, not an error, on one that's
 already open).
 
+**Deleting one — `delete_decision(decision)`, a hard, unrecoverable delete.** It is a
+cleanup action for a decision raised in error, not a step in the normal
+create/resolve/reopen workflow — there is no undo. It works identically on an `OPEN` or
+`RESOLVED` decision, and returns `NOT_FOUND` for an unknown or already-deleted one, same
+as any other tool addressing a decision that isn't there.
+
 ## Finding work
 
 `search_tickets` searches **across boards**, filtered server-side — omit `boards` and it
