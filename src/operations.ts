@@ -232,6 +232,13 @@ export const REOPEN_DECISION = `
     reopenDecision(boardId: $boardId, decisionId: $decisionId) { boardId kind decision { ${decisionFields} } }
   }`;
 
+// KDO-137: a hard, unrecoverable delete (KDO-136) — same generic BoardChange shape
+// as DELETE_TAG/DELETE_RELEASE (a deletedId, not a nested entity: it's gone).
+export const DELETE_DECISION = `
+  mutation ($boardId: ID!, $decisionId: ID!) {
+    deleteDecision(boardId: $boardId, decisionId: $decisionId) { boardId kind deletedId }
+  }`;
+
 // KDO-128: resolve a `KEY-D-N` decision ref, same shape as resolveTicket for
 // tickets — unlike TicketRef, it carries the full Decision (no separate getDecision
 // query), which is what lets resolve_decision match chosenOption by label without

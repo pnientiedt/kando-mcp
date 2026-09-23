@@ -3,7 +3,14 @@ import { KandoError } from '../graphql.js';
 import { type Gql, type ToolHost, toolText, resolveBoardId } from './read.js';
 import { parseDecisionId, resolveDecisionRef } from '../tickets.js';
 import { resolveAssignee } from '../resolve.js';
-import { GET_BOARD, CREATE_DECISION, LIST_DECISIONS, RESOLVE_DECISION, REOPEN_DECISION } from '../operations.js';
+import {
+  GET_BOARD,
+  CREATE_DECISION,
+  LIST_DECISIONS,
+  RESOLVE_DECISION,
+  REOPEN_DECISION,
+  DELETE_DECISION,
+} from '../operations.js';
 
 const bad = (msg: string) => new KandoError(msg, 'BAD_INPUT');
 const eq = (a: unknown, b: string) => typeof a === 'string' && a.toLowerCase() === b.toLowerCase();
@@ -222,6 +229,24 @@ export function registerDecisionTools(server: ToolHost, gql: Gql, botEmail: stri
       await gql(REOPEN_DECISION, { boardId: ref.boardId, decisionId: ref.decision.id });
       const { key, num } = parseDecisionId(decision);
       return toolText({ decision: `${key}-D-${num}`, reopened: true });
+    },
+  );
+
+  server.registerTool(
+    'delete_decision',
+    {
+      description:
+        'Hard-delete a decision — permanent and unrecoverable. This is a cleanup action for a decision ' +
+        'raised in error, not a step in the normal create/resolve/reopen workflow; there is no undo. ' +
+        'Works identically on an OPEN or RESOLVED decision. A server NOT_FOUND (unknown or ' +
+        'already-deleted decision) propagates unchanged.',
+      inputSchema: { decision: z.string().describe('decision id, e.g. TSK-D-3') },
+    },
+    async ({ decision }) => {
+      const ref = await resolveDecisionRef(gql, decision);
+      await gql(DELETE_DECISION, { boardId: ref.boardId, decisionId: ref.decision.id });
+      const { key, num } = parseDecisionId(decision);
+      return toolText({ decision: `${key}-D-${num}`, deleted: true });
     },
   );
 }

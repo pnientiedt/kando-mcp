@@ -457,3 +457,49 @@ describe('reopen_decision', () => {
     await expect(tools.reopen_decision({ decision: 'KDO-5' })).rejects.toThrow(/Not a decision id/);
   });
 });
+
+describe('delete_decision', () => {
+  it('deletes a decision, sending the resolved boardId/decisionId', async () => {
+    const calls: Array<{ q: string; v: any }> = [];
+    const gql = async (q: string, v: any = {}) => {
+      calls.push({ q, v });
+      if (q.includes('resolveDecisionRef')) {
+        return { resolveDecisionRef: { boardId: 'b1', decision: { id: '5', num: 5, boardId: 'b1' } } };
+      }
+      if (q.includes('deleteDecision')) return { deleteDecision: { boardId: 'b1', kind: 'DECISION', deletedId: '5' } };
+      throw new Error(`unexpected query: ${q}`);
+    };
+    const { host, tools } = captureHost();
+    registerDecisionTools(host, gql as never, null);
+    const out = parse(await tools.delete_decision({ decision: 'KDO-D-5' }));
+    expect(out).toEqual({ decision: 'KDO-D-5', deleted: true });
+    const call = calls.find((c) => c.q.includes('deleteDecision'));
+    expect(call!.v).toMatchObject({ boardId: 'b1', decisionId: '5' });
+  });
+
+  it('propagates a server NOT_FOUND unchanged', async () => {
+    const gql = async (q: string) => {
+      if (q.includes('resolveDecisionRef')) {
+        return { resolveDecisionRef: { boardId: 'b1', decision: { id: '5', num: 5, boardId: 'b1' } } };
+      }
+      if (q.includes('deleteDecision')) {
+        const err: any = new Error('NOT_FOUND');
+        err.code = 'NOT_FOUND';
+        throw err;
+      }
+      throw new Error(`unexpected query: ${q}`);
+    };
+    const { host, tools } = captureHost();
+    registerDecisionTools(host, gql as never, null);
+    await expect(tools.delete_decision({ decision: 'KDO-D-5' })).rejects.toThrow(/NOT_FOUND/);
+  });
+
+  it('rejects a malformed decision ref without calling the server', async () => {
+    const gql = async (q: string) => {
+      throw new Error(`should not be called: ${q}`);
+    };
+    const { host, tools } = captureHost();
+    registerDecisionTools(host, gql as never, null);
+    await expect(tools.delete_decision({ decision: 'KDO-5' })).rejects.toThrow(/Not a decision id/);
+  });
+});
