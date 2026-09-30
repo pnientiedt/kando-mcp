@@ -509,3 +509,99 @@ describe('blockedBy on the write tools', () => {
     }
   });
 });
+
+describe('create_subtask STORY_UPSERT envelope (KDO-144)', () => {
+  const setup = (createSubtask: any, calls: any[] = []) => {
+    const gql = vi.fn(async (query: string, variables: any) => {
+      calls.push({ query, variables });
+      if (query.includes('resolveTicket')) {
+        return { resolveTicket: { boardId: 'b1', storyId: 's1', subtaskId: null } };
+      }
+      if (query.includes('createSubtask')) return { createSubtask };
+      if (query.includes('getBoard')) {
+        const p = boardPayload();
+        p.getBoard.stories[0].subtasks = [
+          { id: 'x1', num: 8, storyId: 's1', columnId: 'open', rank: 'b', archivedAt: null },
+          { id: 'x2', num: 9, storyId: 's1', columnId: 'open', rank: 'z', archivedAt: null },
+        ] as never;
+        return p;
+      }
+      return { updateSubtask: { subtask: { id: 'x2' } } };
+    });
+    const { host, tools } = captureHost();
+    registerTicketTools(host, gql as never);
+    return { tools, calls };
+  };
+  const parse = (r: any) => JSON.parse(r.content[0].text);
+
+  it('CREATE_SUBTASK selects story.subtasks including title', async () => {
+    const { CREATE_SUBTASK } = await import('../operations.js');
+    expect(CREATE_SUBTASK.replace(/\s+/g, ' ')).toMatch(/story \{ id subtasks \{[^}]*\btitle\b[^}]*\} \}/);
+  });
+
+  it('reads the new KEY-N from story.subtasks when subtask is null', async () => {
+    const { tools } = setup({
+      kind: 'STORY_UPSERT',
+      subtask: null,
+      story: { id: 's1', subtasks: [
+        { id: 'x1', num: 8, title: 'other' },
+        { id: 'x2', num: 9, title: 'sub' },
+        { id: 'x0', num: 12, title: 'unrelated' },
+      ] },
+    });
+    const out = parse(await tools.create_subtask({ parent: 'KDO-1', title: 'sub', column: 'open' }));
+    expect(out.ticket).toBe('KDO-9');
+  });
+
+  it('picks the highest num among same-titled subtasks', async () => {
+    const { tools } = setup({
+      kind: 'STORY_UPSERT',
+      subtask: null,
+      story: { id: 's1', subtasks: [
+        { id: 'x1', num: 8, title: 'sub' },
+        { id: 'x2', num: 9, title: 'sub' },
+      ] },
+    });
+    const out = parse(await tools.create_subtask({ parent: 'KDO-1', title: 'sub', column: 'open' }));
+    expect(out.ticket).toBe('KDO-9');
+  });
+
+  it('still uses the SUBTASK_UPSERT subtask unchanged', async () => {
+    const { tools } = setup({ kind: 'SUBTASK_UPSERT', subtask: { id: 'x2', num: 9 }, story: null });
+    const out = parse(await tools.create_subtask({ parent: 'KDO-1', title: 'sub', column: 'open' }));
+    expect(out.ticket).toBe('KDO-9');
+  });
+
+  it('returns ticket:null with a note, no error, when not findable', async () => {
+    const { tools } = setup({
+      kind: 'STORY_UPSERT',
+      subtask: null,
+      story: { id: 's1', subtasks: [{ id: 'x1', num: 8, title: 'other' }] },
+    });
+    const out = parse(await tools.create_subtask({ parent: 'KDO-1', title: 'sub', column: 'open' }));
+    expect(out.ticket).toBeNull();
+    expect(out.note).toBe('created; number could not be read back');
+  });
+
+  it('applies position in the STORY_UPSERT case using the id from story.subtasks', async () => {
+    const calls: any[] = [];
+    const { tools } = setup(
+      { kind: 'STORY_UPSERT', subtask: null, story: { id: 's1', subtasks: [{ id: 'x2', num: 9, title: 'sub' }] } },
+      calls,
+    );
+    await tools.create_subtask({ parent: 'KDO-1', title: 'sub', column: 'open', position: { to: 'top' } });
+    const update = calls.find((c) => c.query.includes('updateSubtask'));
+    expect(update!.variables).toMatchObject({ boardId: 'b1', storyId: 's1', subtaskId: 'x2' });
+  });
+
+  it('skips position and says so when no id can be found', async () => {
+    const calls: any[] = [];
+    const { tools } = setup({ kind: 'STORY_UPSERT', subtask: null, story: { id: 's1', subtasks: [] } }, calls);
+    const out = parse(
+      await tools.create_subtask({ parent: 'KDO-1', title: 'sub', column: 'open', position: { to: 'top' } }),
+    );
+    expect(calls.some((c) => c.query.includes('updateSubtask'))).toBe(false);
+    expect(out.ticket).toBeNull();
+    expect(out.note).toContain('position');
+  });
+});
