@@ -16,7 +16,14 @@ import {
   cleanupLegacy,
   gitWorkTreeRoot,
   init,
+  readInstalledVersion,
+  compareVersions,
+  writeTracked,
+  formatInitReport,
+  type InitReport,
 } from './init.js';
+import { parseInitArgs } from './cli.js';
+import { statSync, readdirSync } from 'node:fs';
 
 describe('mcpServerEntry', () => {
   it('uses plain npx on posix', () => {
@@ -317,5 +324,213 @@ describe('cleanupLegacy', () => {
   it('is a no-op when there is no .kando/', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kando-cleanup-none-'));
     expect(cleanupLegacy(dir)).toEqual([]);
+  });
+});
+
+const CUR = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')).version as string;
+const tmp = (n: string) => mkdtempSync(join(tmpdir(), `kando-${n}-`));
+const setMarker = (dir: string, v: unknown) => {
+  mkdirSync(join(dir, '.claude'), { recursive: true });
+  writeFileSync(join(dir, '.claude', 'kando.json'), typeof v === 'string' ? v : JSON.stringify(v));
+};
+function listAll(dir: string, base = dir): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const e of readdirSync(dir)) {
+    const p = join(dir, e);
+    if (statSync(p).isDirectory()) Object.assign(out, listAll(p, base));
+    else out[p.slice(base.length)] = readFileSync(p, 'utf8');
+  }
+  return out;
+}
+
+describe('compareVersions', () => {
+  it('compares numerically', () => {
+    expect(compareVersions('0.14.10', '0.14.9')).toBeGreaterThan(0);
+    expect(compareVersions('0.14.9', '0.14.10')).toBeLessThan(0);
+    expect(compareVersions('1.0.0', '1.0.0')).toBe(0);
+    expect(compareVersions('99.0.0', '0.14.3')).toBeGreaterThan(0);
+  });
+});
+
+describe('readInstalledVersion', () => {
+  it('fresh when nothing is there', () => {
+    expect(readInstalledVersion(tmp('rv-fresh'))).toEqual({ kind: 'fresh' });
+  });
+  it('installed when the marker is readable', () => {
+    const d = tmp('rv-inst');
+    setMarker(d, { version: '0.14.1' });
+    expect(readInstalledVersion(d)).toEqual({ kind: 'installed', version: '0.14.1' });
+  });
+  it('legacy when .mcp.json has a kando server and no marker', () => {
+    const d = tmp('rv-mcp');
+    writeFileSync(join(d, '.mcp.json'), JSON.stringify({ mcpServers: { kando: {} } }));
+    expect(readInstalledVersion(d)).toEqual({ kind: 'legacy' });
+  });
+  it('legacy when only .claude/skills/kando/ exists', () => {
+    const d = tmp('rv-skill');
+    mkdirSync(join(d, '.claude', 'skills', 'kando'), { recursive: true });
+    expect(readInstalledVersion(d)).toEqual({ kind: 'legacy' });
+  });
+  it('fresh when .mcp.json has other servers only', () => {
+    const d = tmp('rv-other');
+    writeFileSync(join(d, '.mcp.json'), JSON.stringify({ mcpServers: { other: {} } }));
+    expect(readInstalledVersion(d)).toEqual({ kind: 'fresh' });
+  });
+  it.each([['not json {'], [JSON.stringify({})], [JSON.stringify({ version: 'latest' })], [JSON.stringify({ version: '1.2' })]])(
+    'legacy (never a crash) for a bad marker %s',
+    (raw) => {
+      const d = tmp('rv-bad');
+      setMarker(d, raw);
+      expect(readInstalledVersion(d)).toEqual({ kind: 'legacy' });
+    },
+  );
+});
+
+describe('writeTracked', () => {
+  it('added / updated / unchanged, and does not write when unchanged', () => {
+    const d = tmp('wt');
+    const f = join(d, 'sub', 'a.txt');
+    expect(writeTracked(f, 'one')).toBe('added');
+    const m = statSync(f).mtimeMs;
+    expect(writeTracked(f, 'one')).toBe('unchanged');
+    expect(statSync(f).mtimeMs).toBe(m);
+    expect(writeTracked(f, 'two')).toBe('updated');
+    expect(readFileSync(f, 'utf8')).toBe('two');
+  });
+});
+
+describe('init report + scenarios', () => {
+  it('fresh install: adds everything and writes the marker', () => {
+    const d = tmp('sc-fresh');
+    const r = init(d);
+    expect(r.previous).toEqual({ kind: 'fresh' });
+    expect(r.current).toBe(CUR);
+    expect(r.changes.length).toBeGreaterThan(0);
+    expect(r.changes.every((c) => c.status === 'added')).toBe(true);
+    expect(r.changes.map((c) => c.path)).toContain('.claude/kando.json');
+    expect(JSON.parse(readFileSync(join(d, '.claude', 'kando.json'), 'utf8'))).toEqual({ version: CUR });
+    expect(formatInitReport(r, { verbose: false })).toContain(`Fresh install: v${CUR}`);
+  });
+
+  it('second init: all unchanged, no mtime changes', async () => {
+    const d = tmp('sc-again');
+    init(d);
+    const before = Object.fromEntries(Object.keys(listAll(d)).map((k) => [k, statSync(join(d, k)).mtimeMs]));
+    await new Promise((r) => setTimeout(r, 20));
+    const r = init(d);
+    expect(r.previous).toEqual({ kind: 'installed', version: CUR });
+    expect(r.changes.every((c) => c.status === 'unchanged')).toBe(true);
+    for (const k of Object.keys(before)) expect(statSync(join(d, k)).mtimeMs).toBe(before[k]);
+    const out = formatInitReport(r, { verbose: false });
+    expect(out).toContain(`Reinstall: v${CUR} (already current)`);
+    expect(out).toContain('Already up to date — nothing changed.');
+  });
+
+  it('legacy install (kando in .mcp.json, no marker): unknown version update, marker created', () => {
+    const d = tmp('sc-legacy');
+    writeFileSync(join(d, '.mcp.json'), JSON.stringify({ mcpServers: { kando: { command: 'x' } } }));
+    const r = init(d);
+    expect(formatInitReport(r, { verbose: false })).toContain(`Update: unknown version → v${CUR}`);
+    expect(existsSync(join(d, '.claude', 'kando.json'))).toBe(true);
+  });
+
+  it('older marker + locally edited skill file: update, file updated, marker bumped', () => {
+    const d = tmp('sc-old');
+    init(d);
+    setMarker(d, { version: '0.0.1' });
+    writeFileSync(join(d, '.claude', 'skills', 'kando', 'SKILL.md'), 'edited');
+    const r = init(d);
+    expect(r.changes).toContainEqual({ path: '.claude/skills/kando/SKILL.md', status: 'updated' });
+    expect(formatInitReport(r, { verbose: false })).toContain(`Update: v0.0.1 → v${CUR}`);
+    expect(JSON.parse(readFileSync(join(d, '.claude', 'kando.json'), 'utf8')).version).toBe(CUR);
+  });
+
+  it('newer marker without force: throws and touches nothing (even legacy cleanup)', () => {
+    const d = tmp('sc-down');
+    setMarker(d, { version: '99.0.0' });
+    mkdirSync(join(d, '.kando'), { recursive: true });
+    writeFileSync(join(d, '.kando', '.env'), 'secret');
+    const snap = listAll(d);
+    expect(() => init(d)).toThrow(
+      `Installed kando v99.0.0 is newer than this init (v${CUR}) — likely a stale npx cache. Try: npx kando-mcp@latest init. To downgrade anyway, re-run with --force.`,
+    );
+    expect(listAll(d)).toEqual(snap);
+  });
+
+  it('newer marker with force: runs as a labelled downgrade', () => {
+    const d = tmp('sc-force');
+    setMarker(d, { version: '99.0.0' });
+    const r = init(d, { force: true });
+    expect(formatInitReport(r, { verbose: false })).toContain(`Downgrade: v99.0.0 → v${CUR} (--force)`);
+    expect(JSON.parse(readFileSync(join(d, '.claude', 'kando.json'), 'utf8')).version).toBe(CUR);
+  });
+
+  it('reports legacy cleanup as removed', () => {
+    const d = tmp('sc-rm');
+    mkdirSync(join(d, '.kando'), { recursive: true });
+    writeFileSync(join(d, '.kando', '.env'), 'secret');
+    const r = init(d);
+    expect(r.changes).toContainEqual({ path: '.kando/.env', status: 'removed' });
+    expect(formatInitReport(r, { verbose: false })).toContain('  removed    .kando/.env (legacy)');
+  });
+});
+
+describe('formatInitReport', () => {
+  const base = (over: Partial<InitReport>): InitReport => ({
+    previous: { kind: 'fresh' },
+    current: '1.2.3',
+    target: '/abs/t',
+    changes: [],
+    ...over,
+  });
+  it('header line', () => {
+    expect(formatInitReport(base({}), { verbose: false }).split('\n')[0]).toBe('kando-mcp init v1.2.3 → /abs/t');
+  });
+  it('all five line-2 variants', () => {
+    const l2 = (p: InitReport['previous']) => formatInitReport(base({ previous: p }), { verbose: false }).split('\n')[1];
+    expect(l2({ kind: 'fresh' })).toBe('Fresh install: v1.2.3');
+    expect(l2({ kind: 'installed', version: '1.0.0' })).toBe('Update: v1.0.0 → v1.2.3');
+    expect(l2({ kind: 'legacy' })).toBe('Update: unknown version → v1.2.3');
+    expect(l2({ kind: 'installed', version: '1.2.3' })).toBe('Reinstall: v1.2.3 (already current)');
+    expect(l2({ kind: 'installed', version: '2.0.0' })).toBe('Downgrade: v2.0.0 → v1.2.3 (--force)');
+  });
+  const changes = [
+    { path: 'a', status: 'added' as const },
+    { path: 'b', status: 'updated' as const },
+    { path: 'c', status: 'removed' as const },
+    { path: 'd', status: 'unchanged' as const },
+    { path: 'e', status: 'unchanged' as const },
+  ];
+  it('per-file lines and unchanged count', () => {
+    const out = formatInitReport(base({ previous: { kind: 'legacy' }, changes }), { verbose: false });
+    expect(out).toContain('  added      a');
+    expect(out).toContain('  updated    b');
+    expect(out).toContain('  removed    c (legacy)');
+    expect(out).toContain('  unchanged  2 files');
+    expect(out).not.toContain('  unchanged  d');
+    expect(out.trimEnd().split('\n').pop()).toBe('✓ Restart Claude Code to pick up the changes.');
+  });
+  it('verbose lists unchanged files', () => {
+    const out = formatInitReport(base({ changes }), { verbose: true });
+    expect(out).toContain('  unchanged  d');
+    expect(out).toContain('  unchanged  e');
+    expect(out).not.toContain('unchanged  2 files');
+  });
+  it('up-to-date final line; fresh adds the login hint', () => {
+    const same = formatInitReport(
+      base({ previous: { kind: 'installed', version: '1.2.3' }, changes: [{ path: 'd', status: 'unchanged' }] }),
+      { verbose: false },
+    );
+    expect(same.trimEnd().split('\n').pop()).toBe('✓ Already up to date — nothing changed.');
+    const fresh = formatInitReport(base({ changes: [{ path: 'a', status: 'added' }] }), { verbose: false });
+    expect(fresh).toContain('Then run `kando-mcp login` if you have not.');
+  });
+});
+
+describe('parseInitArgs', () => {
+  it('flags in any position, dir is first non-flag', () => {
+    expect(parseInitArgs([])).toEqual({ dir: '.', force: false, verbose: false });
+    expect(parseInitArgs(['--force', 'x', '--verbose'])).toEqual({ dir: 'x', force: true, verbose: true });
+    expect(parseInitArgs(['x', '--verbose'])).toEqual({ dir: 'x', force: false, verbose: true });
   });
 });
