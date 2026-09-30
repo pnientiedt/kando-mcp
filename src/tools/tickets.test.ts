@@ -534,6 +534,11 @@ describe('create_subtask STORY_UPSERT envelope (KDO-144)', () => {
   };
   const parse = (r: any) => JSON.parse(r.content[0].text);
 
+  it('CREATE_SUBTASK selects story.subtasks including title', async () => {
+    const { CREATE_SUBTASK } = await import('../operations.js');
+    expect(CREATE_SUBTASK.replace(/\s+/g, ' ')).toMatch(/story \{ id subtasks \{[^}]*\btitle\b[^}]*\} \}/);
+  });
+
   it('reads the new KEY-N from story.subtasks when subtask is null', async () => {
     const { tools } = setup({
       kind: 'STORY_UPSERT',
