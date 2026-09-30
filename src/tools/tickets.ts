@@ -212,14 +212,35 @@ export function registerTicketTools(server: ToolHost, gql: Gql, botEmail: string
       const { bc, cols } = await boardForCreate(gql, ref.boardId);
       const { vars, colLabel } = createVars(bc, cols, column, rest, botEmail);
       const data = await gql(CREATE_SUBTASK, { boardId: ref.boardId, storyId, ...vars });
-      const subtask = data.createSubtask.subtask;
+      const change = data.createSubtask;
+      // A STORY_UPSERT carries subtask: null — find the new one (highest num
+      // with our title; nums are monotonic) among the story's subtasks.
+      let subtask = change.subtask;
+      if (!subtask) {
+        const matches = ((change.story?.subtasks ?? []) as any[]).filter(
+          (t) => t && t.title === rest.title && typeof t.num === 'number',
+        );
+        subtask = matches.reduce((best: any, t: any) => (!best || t.num > best.num ? t : best), null);
+      }
+      const notes: string[] = [];
       if (pos) {
-        const subRef: TicketIds = { boardId: ref.boardId, storyId, subtaskId: subtask.id };
-        await applyPosition(gql, subRef, pos);
+        if (subtask?.id) {
+          const subRef: TicketIds = { boardId: ref.boardId, storyId, subtaskId: subtask.id };
+          await applyPosition(gql, subRef, pos);
+        } else {
+          notes.push('position skipped: new subtask id could not be read back');
+        }
       }
       const key = bc.board?.key ?? null;
-      const ticket = key && typeof subtask.num === 'number' ? `${key}-${subtask.num}` : null;
-      return toolText({ ticket, title: rest.title, col: colLabel, parent });
+      const ticket = key && typeof subtask?.num === 'number' ? `${key}-${subtask.num}` : null;
+      if (!subtask) notes.unshift('created; number could not be read back');
+      return toolText({
+        ticket,
+        title: rest.title,
+        col: colLabel,
+        parent,
+        ...(notes.length ? { note: notes.join('; ') } : {}),
+      });
     },
   );
 

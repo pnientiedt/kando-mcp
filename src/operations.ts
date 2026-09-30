@@ -89,6 +89,14 @@ export const UNARCHIVE_STORY = `
     unarchiveStory(boardId: $boardId, storyId: $storyId) { ${storyChange} }
   }`;
 
+/**
+ * createSubtask returns a STORY_UPSERT (subtask: null, the story carrying its
+ * active subtasks) when the new subtask promotes its parent to a container or
+ * changes its derived status (KDO-144) — so the selection must reach story.subtasks.
+ * `title` is selected there so the new one can be told from its siblings.
+ */
+const createSubtaskChange = `boardId kind subtask { ${ackSubtaskFields} } story { id subtasks { ${ackSubtaskFields} title } }`;
+
 export const CREATE_SUBTASK = `
   mutation ($boardId: ID!, $storyId: ID!, $title: String!, $columnId: ID!, $body: String,
     $tags: [String!], $releaseId: String, $estimateHours: Float, $excludedFromRelease: Boolean,
@@ -96,7 +104,7 @@ export const CREATE_SUBTASK = `
     createSubtask(boardId: $boardId, storyId: $storyId, title: $title, columnId: $columnId,
       body: $body, tags: $tags, releaseId: $releaseId, estimateHours: $estimateHours,
       excludedFromRelease: $excludedFromRelease, visibleAt: $visibleAt, assignee: $assignee,
-      blockedBy: $blockedBy) { ${subtaskChange} }
+      blockedBy: $blockedBy) { ${createSubtaskChange} }
   }`;
 
 export const UPDATE_SUBTASK = `
