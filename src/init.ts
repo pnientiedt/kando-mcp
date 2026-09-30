@@ -3,12 +3,11 @@ import {
   mkdirSync,
   readFileSync,
   writeFileSync,
-  copyFileSync,
   readdirSync,
   statSync,
   rmSync,
 } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const LOOP_AUTH_MARKER = '## Kando autonomous loop — deploy authorization';
@@ -93,21 +92,114 @@ export function relTargets(skillFiles: string[], commandFiles: string[], agentFi
   };
 }
 
-/** Recursively copy a directory's files into destDir (skipping .gitkeep). No-op if srcDir is absent. */
-export function copyTree(srcDir: string, destDir: string): void {
-  if (!existsSync(srcDir)) return;
+export type ChangeStatus = 'added' | 'updated' | 'unchanged' | 'removed';
+export type InitChange = { path: string; status: ChangeStatus };
+export type InstalledVersion =
+  | { kind: 'fresh' }
+  | { kind: 'legacy' }
+  | { kind: 'installed'; version: string };
+export type InitReport = {
+  previous: InstalledVersion;
+  current: string;
+  target: string;
+  changes: InitChange[];
+};
+
+const VERSION_RE = /^\d+\.\d+\.\d+$/;
+
+/** Numeric semver (x.y.z) compare: negative, 0, or positive. */
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/** Write `content` only if it differs from what is on disk; report what happened. */
+export function writeTracked(path: string, content: string | Buffer): 'added' | 'updated' | 'unchanged' {
+  const buf = typeof content === 'string' ? Buffer.from(content) : content;
+  let status: 'added' | 'updated' = 'added';
+  if (existsSync(path)) {
+    if (readFileSync(path).equals(buf)) return 'unchanged';
+    status = 'updated';
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, buf);
+  return status;
+}
+
+/** Which kando (if any) is installed in `target`, from the version marker. Never throws. */
+export function readInstalledVersion(target: string): InstalledVersion {
+  const markerPath = join(target, '.claude', 'kando.json');
+  const hasTraces = (): boolean => {
+    if (existsSync(join(target, '.claude', 'skills', 'kando'))) return true;
+    try {
+      return !!readJson(join(target, '.mcp.json'))?.mcpServers?.kando;
+    } catch {
+      return false;
+    }
+  };
+  if (existsSync(markerPath)) {
+    try {
+      const v = JSON.parse(readFileSync(markerPath, 'utf8'))?.version;
+      if (typeof v === 'string' && VERSION_RE.test(v)) return { kind: 'installed', version: v };
+    } catch {
+      /* corrupt marker → legacy */
+    }
+    return { kind: 'legacy' };
+  }
+  return hasTraces() ? { kind: 'legacy' } : { kind: 'fresh' };
+}
+
+/** The running package's version. */
+function packageVersion(pkgRoot: string): string {
+  return JSON.parse(readFileSync(join(pkgRoot, '..', 'package.json'), 'utf8')).version;
+}
+
+/** Recursively copy a directory's files into destDir (skipping .gitkeep), reporting each (absolute dest path). */
+export function copyTree(srcDir: string, destDir: string): { path: string; status: 'added' | 'updated' | 'unchanged' }[] {
+  const out: { path: string; status: 'added' | 'updated' | 'unchanged' }[] = [];
+  if (!existsSync(srcDir)) return out;
   for (const entry of readdirSync(srcDir)) {
     if (entry === '.gitkeep') continue;
     const src = join(srcDir, entry);
     const dest = join(destDir, entry);
-    if (statSync(src).isDirectory()) {
-      mkdirSync(dest, { recursive: true });
-      copyTree(src, dest);
-    } else {
-      mkdirSync(dirname(dest), { recursive: true });
-      copyFileSync(src, dest);
-    }
+    if (statSync(src).isDirectory()) out.push(...copyTree(src, dest));
+    else out.push({ path: dest, status: writeTracked(dest, readFileSync(src)) });
   }
+  return out;
+}
+
+/** Human-readable report of what `init` did. Pure. */
+export function formatInitReport(report: InitReport, opts: { verbose?: boolean } = {}): string {
+  const { previous, current, changes } = report;
+  const lines = [`kando-mcp init v${current} → ${report.target}`];
+  if (previous.kind === 'fresh') lines.push(`Fresh install: v${current}`);
+  else if (previous.kind === 'legacy') lines.push(`Update: unknown version → v${current}`);
+  else {
+    const c = compareVersions(previous.version, current);
+    if (c === 0) lines.push(`Reinstall: v${current} (already current)`);
+    else if (c > 0) lines.push(`Downgrade: v${previous.version} → v${current} (--force)`);
+    else lines.push(`Update: v${previous.version} → v${current}`);
+  }
+  const unchanged = changes.filter((c) => c.status === 'unchanged');
+  for (const c of changes) {
+    if (c.status === 'added') lines.push(`  added      ${c.path}`);
+    else if (c.status === 'updated') lines.push(`  updated    ${c.path}`);
+    else if (c.status === 'removed') lines.push(`  removed    ${c.path} (legacy)`);
+  }
+  if (unchanged.length) {
+    if (opts.verbose) for (const c of unchanged) lines.push(`  unchanged  ${c.path}`);
+    else lines.push(`  unchanged  ${unchanged.length} files`);
+  }
+  if (changes.some((c) => c.status !== 'unchanged')) {
+    lines.push('✓ Restart Claude Code to pick up the changes.');
+    if (previous.kind === 'fresh') lines.push('Then run `kando-mcp login` if you have not.');
+  } else lines.push('✓ Already up to date — nothing changed.');
+  return lines.join('\n');
 }
 
 export function mergeMcpJson(existing: any, serverEntry: any): any {
@@ -218,7 +310,7 @@ export function gitWorkTreeRoot(dir: string): string | null {
  * `.gitignore` for the personal settings file. `init` also runs legacy cleanup
  * (see cleanupLegacy in this module).
  */
-export function init(targetDir: string): void {
+export function init(targetDir: string, opts: { force?: boolean } = {}): InitReport {
   const target = resolve(targetDir);
   // The install target is a CLAUDE PROJECT directory — the directory you start the
   // agent in — not necessarily a repo root. A monorepo package, a worktree, a plain
@@ -227,27 +319,42 @@ export function init(targetDir: string): void {
   // path that isn't there, which is a typo rather than a project.
   if (!existsSync(target)) throw new Error(`${target} does not exist — create it first`);
   const pkgRoot = dirname(fileURLToPath(import.meta.url)); // src/ (dev) or dist/ (built)
+  const current = packageVersion(pkgRoot);
+  const previous = readInstalledVersion(target);
+
+  // Downgrade guard — before ANY write, legacy cleanup included.
+  if (previous.kind === 'installed' && compareVersions(previous.version, current) > 0 && !opts.force) {
+    throw new Error(
+      `Installed kando v${previous.version} is newer than this init (v${current}) — likely a stale npx cache. Try: npx kando-mcp@latest init. To downgrade anyway, re-run with --force.`,
+    );
+  }
+
+  const changes: InitChange[] = [];
+  const rel = (abs: string): string => relative(target, abs).split(sep).join('/');
+  const track = (abs: string, content: string | Buffer): void => {
+    changes.push({ path: rel(abs), status: writeTracked(abs, content) });
+  };
+
+  // 0) remove stale artifacts from the old bundle-in-repo (bot credentials) model
+  for (const p of cleanupLegacy(target)) changes.push({ path: p, status: 'removed' });
 
   // 1) .mcp.json → npx kando-mcp serve
   const mcpJsonPath = join(target, '.mcp.json');
-  writeFileSync(mcpJsonPath, JSON.stringify(mergeMcpJson(readJson(mcpJsonPath), mcpServerEntry()), null, 2) + '\n');
+  track(mcpJsonPath, JSON.stringify(mergeMcpJson(readJson(mcpJsonPath), mcpServerEntry()), null, 2) + '\n');
 
   // 2) skills + commands + agents (shipped in the package)
-  copyTree(join(pkgRoot, '..', 'skills'), join(target, '.claude', 'skills'));
-  copyTree(join(pkgRoot, '..', 'commands'), join(target, '.claude', 'commands'));
-  copyTree(join(pkgRoot, '..', 'agents'), join(target, '.claude', 'agents'));
+  for (const dir of ['skills', 'commands', 'agents']) {
+    for (const c of copyTree(join(pkgRoot, '..', dir), join(target, '.claude', dir))) {
+      changes.push({ path: rel(c.path), status: c.status });
+    }
+  }
 
   // 3) Node workflow hook (shipped asset), invoked via `node`
   const hooksDir = join(target, '.claude', 'hooks');
-  mkdirSync(hooksDir, { recursive: true });
-  const hookDest = join(hooksDir, 'kando-workflow.mjs');
-  copyFileSync(join(pkgRoot, '..', 'assets', 'kando-workflow.mjs'), hookDest);
+  track(join(hooksDir, 'kando-workflow.mjs'), readFileSync(join(pkgRoot, '..', 'assets', 'kando-workflow.mjs')));
   // The loop's verification waiter. Not a hook — the coordinator runs it under
   // Monitor — but it lives here so `init` ships it with the hook it sits beside.
-  copyFileSync(
-    join(pkgRoot, '..', 'assets', 'kando-verify-wait.mjs'),
-    join(hooksDir, 'kando-verify-wait.mjs'),
-  );
+  track(join(hooksDir, 'kando-verify-wait.mjs'), readFileSync(join(pkgRoot, '..', 'assets', 'kando-verify-wait.mjs')));
   // $CLAUDE_PROJECT_DIR is set by Claude Code for hooks. NOTE: the POSIX form is
   // verified; Windows hook-shell expansion is the A15 real-Windows decision point.
   const hookCmd = `node "$CLAUDE_PROJECT_DIR/.claude/hooks/kando-workflow.mjs"`;
@@ -257,13 +364,11 @@ export function init(targetDir: string): void {
   let settings = enableMcpServer(readJson(settingsPath), 'kando');
   settings = ensureWorkflowHook(settings, hookCmd);
   settings = ensureToolPermissions(settings, LOOP_TOOL_PERMISSIONS);
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  track(settingsPath, JSON.stringify(settings, null, 2) + '\n');
 
   // 5) CLAUDE.md loop-auth
   const claudeMdPath = join(target, 'CLAUDE.md');
-  const before = readText(claudeMdPath);
-  const after = ensureLoopAuthorization(before);
-  if (after !== before) writeFileSync(claudeMdPath, after);
+  track(claudeMdPath, ensureLoopAuthorization(readText(claudeMdPath)));
 
   // 6) .gitignore — ignore the personal settings file, but only where git is
   // watching. Outside a work tree there is nothing to ignore, and writing a
@@ -275,11 +380,13 @@ export function init(targetDir: string): void {
   // the root it would silently fail to match `packages/api/.claude/...`.
   if (gitWorkTreeRoot(target)) {
     const giPath = join(target, '.gitignore');
-    writeFileSync(giPath, ensureGitignore(readText(giPath), '.claude/settings.local.json'));
+    track(giPath, ensureGitignore(readText(giPath), '.claude/settings.local.json'));
   }
 
-  // 7) remove stale artifacts from the old bundle-in-repo (bot credentials) model
-  cleanupLegacy(target);
+  // 7) version marker — last, so a half-failed init is not recorded as installed
+  track(join(target, '.claude', 'kando.json'), JSON.stringify({ version: current }, null, 2) + '\n');
+
+  return { previous, current, target, changes };
 }
 
 /**

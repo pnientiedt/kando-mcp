@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { installCrashGuards } from './crashGuards.js';
-import { parseCli } from './cli.js';
+import { parseCli, parseInitArgs } from './cli.js';
 
 // First thing: never let an unexpected error take the stdio session down.
 installCrashGuards();
 
 const { cmd, args } = parseCli(process.argv.slice(2));
 
-const USAGE = 'Usage: kando-mcp <serve|login|logout|init [dir]>';
+const USAGE = 'Usage: kando-mcp <serve|login|logout|init [dir] [--force] [--verbose]>';
 
 try {
   if (cmd === 'serve') {
@@ -20,9 +20,9 @@ try {
     const { logout } = await import('./commands/logout.js');
     logout();
   } else if (cmd === 'init') {
-    const { init } = await import('./init.js');
-    init(args[0] ?? '.');
-    console.log('✓ Kando MCP wired into this repo. Restart Claude Code, then run `kando-mcp login` if you have not.');
+    const { init, formatInitReport } = await import('./init.js');
+    const opts = parseInitArgs(args);
+    console.log(formatInitReport(init(opts.dir, { force: opts.force }), { verbose: opts.verbose }));
   } else if (cmd === 'version') {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');

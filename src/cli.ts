@@ -14,3 +14,12 @@ export function parseCli(argv: string[]): { cmd: Cmd; args: string[] } {
   }
   return { cmd: 'help', args: [] };
 }
+
+/** `init [dir] [--force] [--verbose]` — flags in any position; dir is the first non-flag arg. */
+export function parseInitArgs(args: string[]): { dir: string; force: boolean; verbose: boolean } {
+  return {
+    dir: args.find((a) => !a.startsWith('--')) ?? '.',
+    force: args.includes('--force'),
+    verbose: args.includes('--verbose'),
+  };
+}
