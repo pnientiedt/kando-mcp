@@ -116,10 +116,10 @@ fetch per interruption — still far below one per worker.
    - **One `search_tickets` call, on this target's board** — if the target is a story, add `parent: target` to scope it to that story's subtasks; if it's a board key, search the whole board. Exactly one call per target, right here — never per ticket.
    - **Discard anything that isn't a stalled work unit**: **container stories** (`next_task` never serves them — they aren't work units), tickets already in the **last column** (finished), and tickets tagged **`pending-ship`** (finished by this very run and parked for its own flush — without this exclusion, every run would report its own completed work as stalled, which is the bug that would make this check useless).
    - **Name a reason for everything left**, one per ticket: `blocked` (with its `blockedBy`), assigned to someone other than the bot account (the same `me` identity `assignee: "me"` resolves to), `snoozed`, or tagged `human-needed`. A ticket can match more than one — report the first that applies, in that order; it's one line per ticket, not an exhaustive audit of why it's unworkable.
-   - **Empty list** → this target is **exhausted** — exactly today's behavior unchanged: go to the **next target** (or, if it was the last, **flush what is on the branch, retire the branch, then stop — success**).
-   - **Non-empty list** → this target is **stalled**, not exhausted: something remains but isn't currently workable. Record the ticket list and reasons for the final summary (below). Control flow is the same as exhausted either way — go to the **next target**, or stop after the exit flush if it was the last. **Never retry a stalled target**: blocked is blocked, and dispatching against it again would only spin.
+   - **Empty list** → this target is **exhausted** — exactly today's behavior unchanged: go to the **next target** (or, if it was the last, **flush what is on the branch, then run the final re-check** below — only if that comes back empty do you retire the branch and stop — success).
+   - **Non-empty list** → this target is **stalled**, not exhausted: something remains but isn't currently workable. Record the ticket list and reasons for the final summary (below). Control flow is the same as exhausted either way — go to the **next target**, or — if it was the last — flush, then run the **final re-check** below. **Never retry a stalled target**: blocked is blocked, and dispatching against it again would only spin.
 
-   This adds **no new `next_task` call and no re-query after a flush**. It reuses the empty result already in hand (fresh from step 1, or carried over from step 7); it is not repeated once a flush resolves a blocker. A blocker cleared before the flush resolves through `unblockingTags`, and one cleared after resolves through the last-column check — either way, every dependent's workability is identical on both sides of the flush, so the carried-over `next_task` result stays valid without asking again.
+   This adds **no new `next_task` call and no re-query after a flush**. It reuses the empty result already in hand (fresh from step 1, or carried over from step 7); it is not repeated once a flush resolves a blocker. A blocker cleared before the flush resolves through `unblockingTags`, and one cleared after resolves through the last-column check — either way, every dependent's workability is identical on both sides of the flush, so the carried-over `next_task` result stays valid without asking again. That reasoning covers *this run's own* blockers only — it says nothing about tickets a human added or unblocked meanwhile, which is why the run never **ends** on it: see the final re-check.
 
    `next_task` also skips a ticket whose `blockedBy` dependency is not resolved yet, and the subtasks of a blocked container story with it. That is normal, not a fault: the blocker is often a ticket **this loop is about to finish**, and the ticket becomes workable the moment the loop finishes the blocker and tags it `pending-ship` — via `unblockingTags`, that happens **before** the flush, not only once the blocker reaches the last column. Never clear someone's `blockedBy` to unstick a target — work the blocker, or move on to the next target.
 2. Enforce safety BEFORE dispatching (cumulative across all targets):
@@ -154,6 +154,16 @@ fetch per interruption — still far below one per worker.
    **Never let a bare `storyId` comparison stand in for that judgement.** `next_task` sets `storyId` only for subtasks, so a standalone story reports `undefined`. `undefined` against the next ticket's `storyId` is not a boundary — it is the *absence* of a story. Reading it as one is how a one-line flaky-test fix buys itself a production deploy.
 
    A run of nothing but standalone stories therefore has no hard rule at all: it is judgement the whole way, plus the exit flush, which guarantees nothing is stranded.
+
+### Final re-check — before you stop for good
+
+Every "nothing left" verdict above was formed from a result you were carrying: a `next_task` from step 7, a stalled list from step 1, a picture of the board from before the exit flush — and a flush can take many minutes. Humans keep using the board while the loop runs: they add tickets, unblock them, reassign them to the bot, un-snooze them. **A run that ends on a cached result strands exactly that work.** So when every target is exhausted or stalled, the exit flush is done (or skipped as empty), and you are about to retire the branch and write the summary:
+
+1. **Call `next_task(target)` again, fresh, for every target in the run** — in order, ignoring every result you already hold. No carried-over value counts here, and neither does your memory of what the board looked like.
+2. **Any target returns a task** → the run is **not** over. Go back to step 1 for that target with that result (safety limits in step 2 still apply, cumulatively), and work on as normal. The branch is still yours: a green flush fast-forwarded it to carry on, so do not retire it in between. When the targets run dry again, you come back here — every stop through this path ends on a fresh, empty re-check.
+3. **Every target returns `{ "none": true }`** → repeat step 1's stalled/exhausted classification for each target with a **fresh** `search_tickets` call, and let *that* — not the earlier one — feed the "left unworked" lines of the summary. Then retire the branch and stop.
+
+This applies to the **exhausted/stalled** stop only. Max-tasks, the circuit breaker and a red flush are stops *because of* the run's own state, not the board's — they flush (where applicable) and stop without a re-check. It costs one `next_task` per target per stop — trivial against ending a run with a workable ticket sitting on the board.
 
 Final summary: cumulative counts of done / human-needed / skipped, the stop reason, and — if a limit tripped mid-run — which target it stopped on. Also report the **loop branch name and whether it was deleted** (and if it was kept, why), the **batches shipped** (merge sha per batch), and any tickets left `pending-ship`. **For every target that ended `stalled` rather than `exhausted`, add a "left unworked" line**: the count, and per ticket its reason (`blocked`, assigned to a human, `snoozed`, `human-needed`). A run that stalls on a target never simply reports success.
 
@@ -257,7 +267,7 @@ time buries the branch list. **The branch is retired once, at the end of the run
 after each flush, because one branch serves the whole run and a green flush
 fast-forwards it to carry on.
 
-**Do this as the last act of the run, after the exit flush has gone green**, before you
+**Do this as the last act of the run, after the exit flush has gone green and the final re-check came back empty**, before you
 write the final summary:
 
 1. `git checkout <base> && git pull --ff-only` — you cannot delete the branch you are
@@ -377,6 +387,7 @@ Dispatch a FRESH general-purpose subagent (it did NOT write this code) with:
 - **Never mark a ticket `done` before its batch's merge commit is on `<base>` AND the verification has gone green.** A ticket sitting on the loop branch under `pending-ship` is NOT done, however finished and well-reviewed it is. Only **you** set `done`, and only at step 3 of a green flush.
 - **Never let a worker push `<base>`.** Workers push `kando-loop/<run-id>` and nothing else; the merge is yours alone.
 - **Never hardcode `main`.** `<base>` is whatever you resolved at run start — `master` and `develop` are just as common, and a command aimed at the wrong branch either fails loudly mid-flush or ships somewhere nobody expected.
+- **Never end a run on a cached "nothing left".** Before an exhausted/stalled stop, re-query every target fresh (the final re-check); if anything is workable now, keep working.
 - **Never exit the run with work left on the branch.** Every stop path flushes first — the sole exception being a red flush that exhausted its fixers and already reverted.
 - **Never exit the run leaving a fully merged loop branch behind**, locally or on `origin`. Retire it — and never with `git branch -D`: if `-d` refuses, the branch is holding unshipped work and must be kept and reported, not forced away.
 - **Never flush mid-container-story.** A container ships whole, as one deploy; half of one in production is the failure this design exists to prevent.
