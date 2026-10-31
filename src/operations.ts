@@ -267,3 +267,19 @@ export const NEXT_TASK = `
       ticket kind id storyId columnId title
     }
   }`;
+
+// KDO-164: image attachments. Cookies for reading, presigned POST for writing.
+export const ATTACHMENT_ACCESS = `
+  query AttachmentAccess($boardId: ID!) {
+    attachmentAccess(boardId: $boardId) { policy signature keyPairId expiresAt }
+  }`;
+
+export const ATTACHMENT_UPLOAD_URL = `
+  mutation AttachmentUploadUrl($boardId: ID!, $itemId: ID, $contentType: String!) {
+    attachmentUploadUrl(boardId: $boardId, itemId: $itemId, contentType: $contentType) { id url fields }
+  }`;
+
+export const CONFIRM_ATTACHMENT = `
+  mutation ConfirmAttachment($boardId: ID!, $attachmentId: ID!) {
+    confirmAttachment(boardId: $boardId, attachmentId: $attachmentId) { id url }
+  }`;

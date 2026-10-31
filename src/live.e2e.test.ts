@@ -6,6 +6,10 @@ import { registerReadTools, type ToolHost } from './tools/read.js';
 import { registerTicketTools } from './tools/tickets.js';
 import { registerCommentTools } from './tools/comments.js';
 import { registerLoopTools } from './tools/loop.js';
+import { registerImageTools } from './tools/images.js';
+import { writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /**
  * Live smoke test against a deployed Kando stage. Targets DEV by default and
@@ -56,6 +60,7 @@ describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
     registerTicketTools(host, gql);
     registerCommentTools(host, gql);
     registerLoopTools(host, gql);
+    registerImageTools(host, gql);
 
     boardKey = randKey();
     const created = await gql(CREATE_BOARD, { name: `mcp-e2e ${boardKey}`, key: boardKey });
@@ -227,6 +232,23 @@ describe.skipIf(!LIVE)('live: bot drives create → move → archive', () => {
     const detail = JSON.parse((await tools.get_ticket({ ticket })).content[0].text);
     expect(detail.comments.map((c: any) => c.comment)).toEqual([`${ticket}-2`, `${ticket}-3`]);
   }, 30_000);
+
+  it('uploads a tiny PNG to a ticket and reads the same bytes back', async () => {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    const path = join(mkdtempSync(join(tmpdir(), 'kando-e2e-')), 'tiny.png');
+    writeFileSync(path, png);
+    const story = JSON.parse((await tools.create_story({ board: boardKey, title: 'e2e image' })).content[0].text);
+    const up = JSON.parse(
+      (await tools.upload_image({ board: boardKey, path, ticket: story.ticket })).content[0].text,
+    );
+    expect(up.markdown).toMatch(/^!\[tiny\.png\]\(\/attachments\//);
+    const got = await tools.get_image({ src: up.url });
+    expect(got.content[0].type).toBe('image');
+    expect(Buffer.from(got.content[0].data, 'base64').equals(png)).toBe(true);
+  }, 60_000);
 
   // The orphan this ticket exists for: a delete that drops the board but leaves
   // its BOARDKEY#<KEY> row behind, burning the key forever. Board keys are

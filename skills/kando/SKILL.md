@@ -68,6 +68,10 @@ done
 
 Older tickets carry `## 🤖 Claude — Plan` / `— Done` sections in their bodies from before comments existed. Leave them; they are history. Do not migrate them, and do not add new ones.
 
+### Images
+
+Tickets and comments may embed images as `![name](/attachments/<boardId>/<id>)`. Look at the relevant ones with `get_image` (pass the path as written). To embed one yourself, call `upload_image` (pass `ticket` so it is bound to that ticket, also for comments), then write the returned `markdown` snippet into the body or comment via `update_ticket`/`create_story`/`add_comment`. Never paste external image URLs.
+
 ### Reading comments
 
 `get_ticket` inlines a ticket's 10 most recent comments; `list_comments KEY-N` returns all of them. Read them before you plan — a decision already argued out there is one you should not re-litigate.

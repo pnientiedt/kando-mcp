@@ -70,6 +70,8 @@ export const LOOP_TOOL_PERMISSIONS = [
   'mcp__kando__create_subtask',
   'mcp__kando__list_comments',
   'mcp__kando__add_comment',
+  'mcp__kando__get_image',
+  'mcp__kando__upload_image',
 ];
 
 /** Add tool permissions to settings.permissions.allow. Idempotent; preserves everything else. */

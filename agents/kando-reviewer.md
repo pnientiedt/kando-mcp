@@ -1,7 +1,7 @@
 ---
 name: kando-reviewer
 description: Independent code reviewer for a Kando loop ticket. Reads a diff range and reports BLOCKING and ADVISORY findings. Never writes code. Posts its findings as a ticket comment and touches nothing else on the board.
-tools: Read, Grep, Glob, Bash, mcp__kando__get_ticket, mcp__kando__add_comment
+tools: Read, Grep, Glob, Bash, mcp__kando__get_ticket, mcp__kando__add_comment, mcp__kando__get_image
 model: sonnet
 ---
 
