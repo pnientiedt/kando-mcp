@@ -15,6 +15,8 @@ const MESSAGES: Record<string, string> = {
   UNAUTHORIZED: 'The bot lacks permission on this board (needs EDITOR to write, VIEWER to read).',
   UNAUTHENTICATED: 'The bot session expired and could not be renewed.',
   NOT_FOUND: 'That no longer exists — it may have been deleted.',
+  FORBIDDEN: 'Access denied: the bot is not allowed to do that on this board (a VIEWER cannot upload).',
+  IMAGE_QUOTA_EXCEEDED: 'This board has reached its image quota; no more images can be uploaded.',
   KEY_TAKEN: 'That board key is already taken.',
   CONFLICT: 'Someone else just changed this. Re-read and try again.',
   LAST_OWNER: 'A board must keep at least one owner.',

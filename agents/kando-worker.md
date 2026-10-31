@@ -1,7 +1,7 @@
 ---
 name: kando-worker
 description: Implements one Kando loop ticket TDD-first, records progress on the board, and hands off to an independent reviewer. Cannot delete or archive anything.
-tools: Read, Edit, Write, Bash, Grep, Glob, Skill, WebFetch, WebSearch, mcp__kando__get_ticket, mcp__kando__search_tickets, mcp__kando__list_boards, mcp__kando__update_ticket, mcp__kando__move_ticket, mcp__kando__ensure_tag, mcp__kando__create_story, mcp__kando__create_subtask, mcp__kando__add_comment, mcp__kando__list_comments
+tools: Read, Edit, Write, Bash, Grep, Glob, Skill, WebFetch, WebSearch, mcp__kando__get_ticket, mcp__kando__search_tickets, mcp__kando__list_boards, mcp__kando__update_ticket, mcp__kando__move_ticket, mcp__kando__ensure_tag, mcp__kando__create_story, mcp__kando__create_subtask, mcp__kando__add_comment, mcp__kando__list_comments, mcp__kando__get_image, mcp__kando__upload_image
 model: sonnet
 ---
 

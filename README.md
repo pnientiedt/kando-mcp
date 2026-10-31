@@ -54,6 +54,7 @@ Access is **per board**. The account you log in as only sees boards it is a memb
 - **Read:** `list_boards`, `get_board`, `get_ticket`, `search_tickets`
 - **Tickets:** `create_story`, `create_subtask`, `update_ticket`, `move_ticket`, `reorder_ticket`, `archive_ticket`, `unarchive_ticket`, `delete_ticket`
 - **Comments:** `list_comments`, `add_comment`, `edit_comment`, `delete_comment`
+- **Images:** `get_image` (look at an embedded `/attachments/...` image), `upload_image` (upload a local png/jpeg/gif/webp, get a markdown snippet back)
 - **Decisions:** `create_decision`, `list_decisions`, `resolve_decision`, `reopen_decision`
 - **Tags:** `create_tag`, `update_tag`, `delete_tag`
 - **Releases:** `create_release`, `update_release`, `delete_release`

@@ -7,7 +7,11 @@ import { buildContext, leanItem, leanDetail, leanComments, COMMENT_CAP } from '.
 
 export type Gql = GqlClient;
 
-export type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
+export type ToolContent =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: string };
+
+export type ToolResult = { content: ToolContent[]; isError?: boolean };
 
 /** The subset of McpServer the registrars use — lets tests pass a capturing stub. */
 export interface ToolHost {

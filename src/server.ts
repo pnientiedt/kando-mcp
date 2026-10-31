@@ -5,6 +5,7 @@ import { registerRegistryTools } from './tools/registry.js';
 import { registerCommentTools } from './tools/comments.js';
 import { registerDecisionTools } from './tools/decisions.js';
 import { registerLoopTools } from './tools/loop.js';
+import { registerImageTools } from './tools/images.js';
 import { bulletproofHost } from './tools/safe.js';
 import { makeOnceNotice } from './sessionNotice.js';
 
@@ -23,5 +24,6 @@ export function buildServer(
   registerCommentTools(host, gql);
   registerDecisionTools(host, gql, opts.email ?? null);
   registerLoopTools(host, gql);
+  registerImageTools(host, gql);
   return server;
 }
